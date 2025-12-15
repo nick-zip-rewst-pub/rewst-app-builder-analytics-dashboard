@@ -1,0 +1,8 @@
+# Local publish script (contains personal paths)
+publish.js
+
+# macOS
+.DS_Store
+
+# Node
+node_modules/

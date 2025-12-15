@@ -1,0 +1,2164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Analytics Dashboard</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Poppins Font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- Material Design Icons -->
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  
+  <!-- Lodash -->
+  <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+
+  <!-- animate JS for loading -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>  
+  
+  <!-- Rewst CSS Theme Overlay -->
+  <style>
+    {{ CSS_THEME }}
+  </style>
+</head>
+<body class="bg-rewst-light">
+  
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+      <div class="loading-content">
+        <svg id="loading-logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 144 144" style="width: 80px; height: 80px;">
+          <defs>
+            <style>
+              .cls-1 { fill: #00bbb4; }
+              .cls-2 { fill: #00928f; }
+              .cls-3 { fill: #ea7a72; }
+              .cls-4 { fill: #fff; }
+              .cls-5 { fill: #f0ab2b; }
+              .cls-6 { fill: #b62025; }
+              .cls-7 { fill: #d1d2d3; }
+              .cls-8 { fill: #606060; }
+              .cls-9 { opacity: .15; }
+            </style>
+          </defs>
+          <g>
+            <g>
+              <path class="cls-3" d="m102.41,28.03s0,.01-.02.02c-3.24,5.21-9.42,10.24-12.29,14.91-3.48,5.67-5.26,16.29-6.04,22.48-6.66-3.52-16.6-5.47-29.92-1.69-4.83,1.37-8.87,3.56-12.24,6.32.65-2.49,1.24-6.7-.35-11.04-2.51-6.82-.05-18.14,4.59-16.7,4.64,1.43,7,11.74,7,11.74,0,0,.32,1.78-.16-5.62-.49-7.39,5.65-23.68,12.28-24.14,6.19-.43,4.25,10.09,3.97,11.48.12-.44.6-2.23,2.48-9.38,2.51-9.53,20.82-20.58,29.97-10.9,4,4.23,3.28,8.41.76,12.48,0,0,0,.01-.02.03Z"/>
+              <path d="m41.9,75.21c-.96,0-1.92-.27-2.77-.81-1.87-1.2-2.76-3.46-2.2-5.61.42-1.63.96-4.83-.2-7.98-2.28-6.19-1.7-16.39,2.79-21.11,2.2-2.32,5.24-3.16,8.14-2.26.61.19,1.2.44,1.75.75,2.55-8.78,8.03-18.47,15.49-18.99,1.52-.1,2.95.13,4.23.67,3.67-5.68,10.48-10.62,17.75-12.48,7.37-1.88,13.95-.24,18.53,4.6,3.58,3.78,6.73,10.1,1.39,18.71-.01.02-.03.05-.04.07-.04.06-.08.13-.13.19-1.9,3-4.43,5.73-6.89,8.38-2.12,2.29-4.12,4.45-5.26,6.31-2.19,3.58-4.14,11.03-5.33,20.44-.21,1.67-1.23,3.13-2.73,3.91-1.5.78-3.28.77-4.77-.02-4.88-2.58-13.37-4.9-26.12-1.29-3.9,1.1-7.39,2.9-10.39,5.36-.94.77-2.09,1.16-3.25,1.16Zm4.11-25.83c-.45,2.28-.53,5.49.35,7.89.44,1.19.75,2.36.96,3.51,1.39-.62,2.83-1.16,4.31-1.62-1.62-.52-3.07-1.84-3.52-3.98-.47-1.99-1.29-4.19-2.11-5.79Zm21.96,7.19c4.64,0,8.63.69,11.99,1.69,1.15-6.44,2.96-13.39,5.77-17.98,1.67-2.73,4.12-5.36,6.48-7.92,2.18-2.35,4.44-4.79,5.83-7.03.04-.06.08-.13.13-.19,1.84-3.04,1.4-4.4-.21-6.1-1.97-2.08-4.84-2.65-8.54-1.71-6.14,1.57-11.79,6.77-12.74,10.39-1.89,7.17-2.37,8.96-2.49,9.4-.72,2.67-3.43,4.29-6.12,3.66-2.69-.63-4.41-3.28-3.87-5.99.35-1.78.44-3.38.39-4.52-2.78,2.94-6.86,12.25-6.49,17.85.15,2.26.24,3.92.27,4.95.07,2.29-.55,3.76-1.37,4.69,4-.84,7.66-1.2,10.98-1.2Zm34.44-28.54h.01-.01Z"/>
+            </g>
+            <g>
+              <path class="cls-6" d="m43.04,61.21c-2.18-6.72-.21-11.45.07-12.04-.06.32-.26,1.74.64,3.59,2.65,5.45,11.6,6.11,11.6,6.11,0,0-.79-2.16-.77-8.4.04-11.94,5.87-18.93,5.87-18.93,0,0-.72,3.94.31,6.63,1.8,4.75,8.86,5.68,8.86,5.68,0,0-.54-11.74,7.94-15.9,6.63-3.26,10.28,1.88,15.6,3.08,6.07,1.36,8.91-2.49,9.24-2.99-3.24,5.21-9.42,10.24-12.29,14.91-3.48,5.67-5.26,16.29-6.04,22.48h0s-.37,1.22-3.32,3.31c-3.84,2.73-8.57,4.82-12.06,5.27-3.06.4-2.48-4.98-9.6-7.62-4.98-1.85-8.35-1.61-11.8.1-1.61.86-3.1,1.81-4.49,2.87.54-2.69.95-6.07.26-8.17Z"/>
+              <path d="m68.32,79.19c-3.81,0-5.79-2.93-6.79-4.4-.97-1.43-1.8-2.66-4.24-3.57-3.77-1.4-5.68-1.12-7.68-.15-1.33.71-2.58,1.51-3.72,2.38-1.7,1.29-4.02,1.4-5.83.27-1.81-1.13-2.73-3.26-2.32-5.36.84-4.21.42-5.57.42-5.58,0,0,0,0,0,0-2.77-8.54-.23-14.67.3-15.81,1.1-2.34,3.77-3.5,6.24-2.7,2.4.78,3.87,3.19,3.48,5.66,0,.08.04.27.18.55.21.44.6.83,1.09,1.19,0-.4,0-.81,0-1.24.04-13.63,6.78-21.85,7.06-22.2,1.49-1.79,4.01-2.35,6.12-1.36,2.11.99,3.29,3.27,2.87,5.57-.19,1.09-.23,2.75-.02,3.64,1.22-4.53,3.91-9.85,9.81-12.75,6.8-3.34,11.98-.65,15.41,1.13,1.29.67,2.5,1.3,3.59,1.55,2.48.56,3.54-.44,3.88-.9,1.57-2.31,4.68-2.93,7.03-1.41,2.34,1.52,3.03,4.66,1.55,7.04-1.91,3.07-4.51,5.87-7.01,8.58-2.12,2.29-4.12,4.45-5.26,6.31-2.19,3.58-4.14,11.03-5.33,20.44-.04.33-.11.65-.22.96-.62,1.89-2.38,3.87-5.22,5.89-4.58,3.25-10.08,5.62-14.37,6.17-.36.05-.7.07-1.03.07Zm-8.29-17.89c.28.09.55.19.84.3,5.1,1.89,7.51,5.02,8.85,6.98,2.46-.7,5.53-2.21,8.05-4,.66-.47,1.1-.84,1.37-1.1,1.03-7.6,2.99-17.33,6.59-23.19,1.04-1.7,2.39-3.37,3.83-5-1.32-.51-2.5-1.13-3.59-1.69-3.03-1.58-4.09-2.03-6.14-1.03-5.31,2.61-5.08,11-5.07,11.09.05,1.51-.56,2.98-1.68,3.99-1.12,1.01-2.62,1.5-4.12,1.3-.70-.09-5.15-.78-8.81-3.52-.26,1.54-.42,3.23-.43,5.06-.01,4.28.39,6.26.49,6.70.59,1.38.49,2.83-.18,4.12Zm.14-4.21-11.99-7.11c0,.05-.02.10-.03.15,0-.03.02-.08.03-.15Z"/>
+            </g>
+          </g>
+          <g>
+            <path class="cls-3" d="m102.41,28.03s0,.01-.02.02c-3.24,5.21-9.42,10.24-12.29,14.91-3.48,5.67-5.26,16.29-6.04,22.48-6.66-3.52-16.6-5.47-29.92-1.69-4.83,1.37-8.87,3.56-12.24,6.32.65-2.49,1.24-6.7-.35-11.04-2.51-6.82-.05-18.14,4.59-16.7,4.64,1.43,7,11.74,7,11.74,0,0,.32,1.78-.16-5.62-.49-7.39,5.65-23.68,12.28-24.14,6.19-.43,4.25,10.09,3.97,11.48.12-.44.6-2.23,2.48-9.38,2.51-9.53,20.82-20.58,29.97-10.9,4,4.23,3.28,8.41.76,12.48,0,0,0,.01-.02.03Z"/>
+            <path class="cls-6" d="m43.04,61.21c-2.18-6.72-.21-11.45.07-12.04-.06.32-.26,1.74.64,3.59,2.65,5.45,11.6,6.11,11.6,6.11,0,0-.79-2.16-.77-8.4.04-11.94,5.87-18.93,5.87-18.93,0,0-.72,3.94.31,6.63,1.8,4.75,8.86,5.68,8.86,5.68,0,0-.54-11.74,7.94-15.9,6.63-3.26,10.28,1.88,15.6,3.08,6.07,1.36,8.91-2.49,9.24-2.99-3.24,5.21-9.42,10.24-12.29,14.91-3.48,5.67-5.26,16.29-6.04,22.48h0s-.37,1.22-3.32,3.31c-3.84,2.73-8.57,4.82-12.06,5.27-3.06.4-2.48-4.98-9.6-7.62-4.98-1.85-8.35-1.61-11.8.1-1.61.86-3.1,1.81-4.49,2.87.54-2.69.95-6.07.26-8.17Z"/>
+          </g>
+          <g class="cls-9">
+            <ellipse class="cls-8" cx="65.78" cy="133.45" rx="25.22" ry="3.91"/>
+          </g>
+          <g>
+            <path class="cls-1" d="m92.84,90.96c0,17.11-13.09,30.98-29.24,30.98s-29.24-13.87-29.24-30.98,13.09-42.84,29.24-42.84,29.24,25.73,29.24,42.84Z"/>
+            <path d="m63.6,124.18c-17.36,0-31.48-14.9-31.48-33.22s13.52-45.08,31.48-45.08,31.48,27.35,31.48,45.08-14.12,33.22-31.48,33.22Zm0-73.81c-14.64,0-26.99,24.93-26.99,40.59s12.11,28.73,26.99,28.73,26.99-12.89,26.99-28.73-12.35-40.59-26.99-40.59Z"/>
+          </g>
+          <path class="cls-2" d="m46.68,90.29c0-14.15,7.25-34.11,17.19-40.92-.68-.11-1.37-.18-2.06-.18-14.69,0-26.61,25.25-26.61,42.03s11.91,30.39,26.61,30.39c1.63,0,3.23-.18,4.78-.5-11.32-2.62-19.91-15.42-19.91-30.82Z"/>
+          <path d="m63.6,124.18c-17.36,0-31.48-14.9-31.48-33.22s13.52-45.08,31.48-45.08,31.48,27.35,31.48,45.08-14.12,33.22-31.48,33.22Zm0-73.81c-14.64,0-26.99,24.93-26.99,40.59s12.11,28.73,26.99,28.73,26.99-12.89,26.99-28.73-12.35-40.59-26.99-40.59Z"/>
+          <g>
+            <g>
+              <path class="cls-3" d="m103.96,109.33c.9,5.37-2.73,10.44-8.09,11.34s-10.44-2.73-11.34-8.09,4.57-26.16,6.47-21.06c2.94,7.87,12.07,12.45,12.96,17.81Z"/>
+              <path d="m94.22,123.05c-2.5,0-4.93-.77-7-2.25-2.63-1.88-4.37-4.67-4.9-7.85-.62-3.71,2.52-23.11,7.25-24.38,1.15-.31,2.76.08,3.54,2.16,1.34,3.58,4.18,6.46,6.93,9.25,2.87,2.91,5.59,5.66,6.14,8.98.53,3.19-.21,6.39-2.09,9.02-1.88,2.63-4.67,4.37-7.85,4.9-.67.11-1.35.17-2.02.17Zm-4.11-28.14c-1.74,4.58-3.89,14.19-3.37,17.29.34,2,1.43,3.76,3.08,4.94s3.67,1.65,5.67,1.31c2-.34,3.76-1.43,4.94-3.08s1.65-3.67,1.31-5.67h0c-.32-1.92-2.55-4.18-4.91-6.56-2.34-2.37-4.93-4.99-6.73-8.22Z"/>
+            </g>
+            <g>
+              <path class="cls-5" d="m85.03,93.08c2.12,1.48,6.23,1.8,11.41.86,3.72-.68,7.98-1.99,12.39-3.84-3.59-7.46-10.32-11.91-20.53-13.57-4.66,4.68-4.14,12.09-3.26,16.54Zm3.67-12.64s3.72,6.42.23,7.26c-3.03.74-2.12-4.9-.23-7.26Z"/>
+              <path d="m91.03,96.72c-2.69,0-5.35-.45-7.28-1.8l-.74-.52-.17-.89c-.90-4.57-1.59-13.07,3.87-18.56l.81-.82,1.14.18c11.01,1.78,18.27,6.63,22.2,14.81l1.02,2.13-2.18.91c-4.55,1.9-8.99,3.28-12.85,3.98-1.76.32-3.8.57-5.82.57Zm-3.97-5.1c1.57.63,4.54.91,8.99.11,2.89-.53,6.17-1.47,9.6-2.77-3.08-4.89-8.03-8.08-15.02-9.68l.02.04c.70,1.2,2.88,5.36,1.65,8.23-.51,1.19-1.52,2.02-2.84,2.34-.97.24-1.89.14-2.65-.24.06.7.15,1.37.25,1.98Z"/>
+            </g>
+          </g>
+          <g>
+            <circle class="cls-4" cx="75.43" cy="83.45" r="15.79"/>
+            <path d="m75.39,101.48c-3.94,0-7.76-1.29-10.94-3.73-7.89-6.05-9.38-17.39-3.33-25.28,6.05-7.89,17.39-9.38,25.28-3.33,3.82,2.93,6.27,7.18,6.9,11.95.63,4.78-.64,9.51-3.57,13.33h0c-2.93,3.82-7.18,6.27-11.95,6.9-.8.11-1.6.16-2.39.16Zm.06-31.58c-.6,0-1.2.04-1.8.12-3.59.47-6.77,2.31-8.97,5.18-4.54,5.92-3.42,14.44,2.5,18.99,2.87,2.20,6.43,3.16,10.01,2.68,3.59-.47,6.77-2.31,8.97-5.18h0c2.2-2.87,3.15-6.42,2.68-10.01-.47-3.59-2.31-6.77-5.18-8.97-2.39-1.83-5.25-2.8-8.21-2.8Z"/>
+          </g>
+          <circle cx="71.49" cy="83.98" r="3.9"/>
+          <path class="cls-7" d="m68.96,74.05c2.54-2.65,5.86-4.09,9.25-4.33-4.97-1.51-10.59-.25-14.43,3.76-5.45,5.68-5.26,14.7.42,20.15,3.03,2.91,7.01,4.2,10.9,3.91-2.08-.63-4.05-1.73-5.73-3.34-5.68-5.45-5.87-14.47-.42-20.15Z"/>
+          <path d="m75.39,101.48c-3.94,0-7.76-1.29-10.94-3.73-7.89-6.05-9.38-17.39-3.33-25.28,6.05-7.89,17.39-9.38,25.28-3.33,3.82,2.93,6.27,7.18,6.9,11.95.63,4.78-.64,9.51-3.57,13.33h0c-2.93,3.82-7.18,6.27-11.95,6.9-.8.11-1.6.16-2.39.16Zm.06-31.58c-.6,0-1.2.04-1.8.12-3.59.47-6.77,2.31-8.97,5.18-4.54,5.92-3.42,14.44,2.5,18.99,2.87,2.20,6.43,3.16,10.01,2.68,3.59-.47,6.77-2.31,8.97-5.18h0c2.2-2.87,3.15-6.42,2.68-10.01-.47-3.59-2.31-6.77-5.18-8.97-2.39-1.83-5.25-2.8-8.21-2.8Z"/>
+        </svg>
+        
+        <div class="loading-dots">
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+        <div class="loading-text">Loading</div>
+      </div>
+    </div>
+
+
+  <!-- Sidebar -->
+  <div id="sidebar" class="sidebar fixed left-0 top-0 h-screen bg-white border-r border-gray-200 flex flex-col z-50">
+    
+    <!-- Sidebar Header -->
+    <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+      <div class="flex items-center gap-2 overflow-hidden">
+        <span class="material-icons text-rewst-teal">analytics</span>
+        <span class="nav-text font-semibold text-rewst-black whitespace-nowrap">Analytics</span>
+      </div>
+      <button id="toggle-sidebar" class="p-1 hover:bg-gray-100 rounded">
+        <span class="material-icons text-gray-600">chevron_left</span>
+      </button>
+    </div>
+    
+    <!-- Navigation -->
+    <nav class="flex-1 p-4 overflow-y-auto">
+      
+      <!-- Dashboard Section -->
+      <div class="mb-2">
+        <div class="flex items-center gap-2 px-3 py-2 text-sm font-medium text-rewst-gray">
+          <span class="material-icons text-lg">dashboard</span>
+          <span class="nav-text">Dashboard</span>
+        </div>
+        
+        <div class="sub-nav ml-4 mt-1 space-y-1">
+          <a href="#" class="sidebar-item active flex items-center gap-3 px-3 py-2 rounded text-sm text-rewst-dark-gray" data-page="overall">
+            <span class="material-icons text-lg">home</span>
+            <span class="nav-text">Overall</span>
+          </a>
+          <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded text-sm text-rewst-dark-gray" data-page="workflows">
+            <span class="material-icons text-lg">account_tree</span>
+            <span class="nav-text">Workflow Details</span>
+          </a>
+          <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded text-sm text-rewst-dark-gray" data-page="forms">
+            <span class="material-icons text-lg">description</span>
+            <span class="nav-text">Form Details</span>
+          </a>
+          <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded text-sm text-rewst-dark-gray" data-page="adoption">
+            <span class="material-icons text-lg">groups</span>
+            <span class="nav-text">Adoption</span>
+          </a>
+          <a href="#" class="sidebar-item flex items-center gap-3 px-3 py-2 rounded text-sm text-rewst-dark-gray" data-page="insights">
+            <span class="material-icons text-lg">lightbulb</span>
+            <span class="nav-text">Insights</span>
+          </a>
+        </div>
+      </div>
+      
+    </nav>
+    
+  </div>
+      
+      <!-- Advanced Filter Slide-Out -->
+    <div id="advanced-filter-overlay" class="fixed inset-0 bg-black bg-opacity-50 z-40 hidden transition-opacity duration-300"></div>
+
+    <div id="advanced-filter-drawer" class="fixed top-0 right-0 h-full w-80 bg-white shadow-2xl z-50 transform translate-x-full transition-transform duration-300">
+      <!-- Header (matching sticky header height) -->
+      <div class="flex items-center justify-between px-8 py-4 border-b border-gray-200 bg-gray-50">
+        <h3 class="text-base font-semibold text-rewst-black">Advanced Filters</h3>
+        <button id="close-filter-drawer" class="text-gray-500 hover:text-gray-700 transition-colors">
+          <span class="material-icons">close</span>
+        </button>
+      </div>
+
+      <!-- Filter Content -->
+      <div class="p-6 overflow-y-auto" style="height: calc(100% - 65px);">
+        
+       <!-- Organization Filter -->
+      <div class="mb-6">
+        <label class="block text-sm font-medium text-rewst-dark-gray mb-2">Organization</label>
+        <div id="org-filter-container"></div>
+      </div>
+
+      <!-- Date Range Filter -->
+      <div class="mb-6">
+        <label class="block text-sm font-medium text-rewst-dark-gray mb-2">Date Range</label>
+        <div id="date-filter-container"></div>
+      </div>
+
+      <!-- Trigger Type Filter -->
+      <div class="mb-6">
+        <label class="block text-sm font-medium text-rewst-dark-gray mb-2">Trigger Type</label>
+        <div id="trigger-filter-container"></div>
+      </div>
+
+      </div>
+    </div>
+
+  <!-- Main Content -->
+  <div id="main-content" class="main-content min-h-screen">
+    
+    <!-- Sticky Header -->
+    <div id="sticky-header" class="sticky-header py-4 px-8">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-2xl font-semibold text-rewst-black transition-all">Time Saved & Forms</h1>
+          <p class="header-subtitle text-sm text-rewst-gray">Analytics dashboard</p>
+        </div>
+        <div class="flex items-center gap-3">
+          <label id="exclude-test-toggle" class="flex items-center gap-2 cursor-pointer">
+            <span class="text-sm text-rewst-gray">Exclude test runs</span>
+            <div class="relative inline-block w-12 h-6">
+              <input type="checkbox" id="exclude-test-runs" class="sr-only">
+              <div class="toggle-bg w-12 h-6 bg-gray-300 rounded-full transition-all duration-200"></div>
+              <div class="toggle-dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition-transform duration-200 shadow-sm"></div>
+            </div>
+          </label>
+          <div id="refresh-button-container">
+            <button id="refresh-dashboard" class="btn-primary flex items-center gap-2">
+              <span class="material-icons">refresh</span>
+              <span class="btn-text">Refresh</span>
+            </button>
+          </div>
+          <div id="filter-button-container">
+            <button id="open-filter-drawer" class="btn-secondary flex items-center gap-2">
+              <span class="material-icons">filter_list</span>
+              <span class="btn-text">Filters</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Page Content -->
+    <div class="px-8 pb-8 pt-6">
+      
+      <!-- Overall Page -->
+      <div id="page-overall" class="page-content">
+        
+        <!-- Metric Cards Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+          <div id="metric-total-hours"></div>
+          <div id="metric-total-forms"></div>
+          <div id="metric-success-rate"></div>
+          <div id="metric-avg-time-saved"></div>
+          <div id="metric-form-submissions"></div>
+          <div id="metric-form-completion"></div>
+        </div>
+
+        <!-- Charts Row -->
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-8">
+          <div class="card lg:col-span-3">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-lg font-semibold flex items-center gap-2">
+                <span class="material-icons text-rewst-teal">show_chart</span>
+                <span id="chart-title-time">Execution Trend</span>
+              </h3>
+              <select id="chart-view-selector" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:border-rewst-teal">
+                <option value="executions">Execution Trend</option>
+                <option value="tasks">Task Usage by Trigger</option>
+              </select>
+            </div>
+            <div id="chart-time-trend"></div>
+          </div>
+
+          <div class="card lg:col-span-2">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-lg font-semibold flex items-center gap-2">
+                <span class="material-icons text-rewst-fandango">pie_chart</span>
+                <span id="doughnut-title">Executions by Trigger Type</span>
+              </h3>
+              <select id="doughnut-view-selector" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:border-rewst-teal">
+                <option value="executions">Executions</option>
+                <option value="tasks">Tasks</option>
+              </select>
+            </div>
+            <div id="chart-form-types"></div>
+          </div>
+        </div>
+
+        <!-- Tables Section -->
+        <div class="space-y-6">
+          
+          <!-- Top Workflows by Time Saved -->
+          <div id="table-top-workflows"></div>
+          <!-- Form Submission Summary -->
+          <div id="table-form-submissions"></div>
+          <!-- Workflow Execution Summary -->
+          <div id="table-executions"></div>
+
+        </div>
+        
+      </div>
+      
+      <!--  
+
+        ------------------------ 
+
+        ## Workflow Detail Section
+
+        ------------------------ 
+
+      -->
+      <div id="page-workflows" class="page-content" style="display: none;">
+        <div class="px-8 py-6 space-y-6">
+          
+          <!-- Workflow Selector -->
+          <div class="card p-6">
+            <h2 class="text-xl font-semibold text-rewst-black mb-4">Select a Workflow</h2>
+            <div id="workflow-selector"></div>
+          </div>
+          
+          <!-- Display Area (Hidden until workflow selected) -->
+          <div id="workflow-display-area" style="display: none;">
+            
+            <!-- Selected Workflow Info -->
+            <div class="card p-6 mb-6">
+              <div class="flex items-center justify-between">
+                <h2 id="selected-workflow-name" class="text-xl font-semibold text-rewst-black">Workflow Name</h2>
+                <a id="selected-workflow-link" href="#" target="_blank" class="btn-secondary flex items-center gap-2">
+                  <span class="material-icons">open_in_new</span>
+                  <span>Open in Rewst</span>
+                </a>
+              </div>
+            </div>
+            
+            <!-- Metrics Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+              <div id="workflow-metric-time"></div>
+              <div id="workflow-metric-value"></div>
+              <div id="workflow-metric-tasks"></div>
+              <div id="workflow-metric-success"></div>
+              <div id="workflow-metric-failures"></div>
+              <div id="workflow-metric-runtime"></div>
+            </div>
+            
+            <!-- Timeline Chart -->
+            <div id="workflow-timeline" class="mb-6"></div>
+            
+            <!-- Failure Analysis -->
+            <div id="workflow-failures" class="mb-6"></div>
+            
+            <!-- Recent Executions -->
+            <div id="workflow-executions"></div>
+            
+          </div>
+          
+        </div>
+      </div>
+
+      <!--  
+
+        ------------------------ 
+
+        ## Form Detail Section
+
+        ------------------------ 
+
+      -->
+      <div id="page-forms" class="page-content" style="display: none;">
+        <div class="px-8 py-6 space-y-6">
+      
+        <!-- Form Selector -->
+        <div class="card p-6">
+          <h2 class="text-xl font-semibold text-rewst-black mb-4">Select a Form</h2>
+          <div id="form-selector-forms"></div> <!-- <- unique to forms page -->
+        </div>
+
+          <!-- Display Area (Hidden until form selected) -->
+          <div id="form-display-area" style="display: none;">
+      
+            <!-- Selected Form Info -->
+            <div class="card p-6 mb-6">
+              <div class="flex items-center justify-between">
+                <h2 id="selected-form-name" class="text-xl font-semibold text-rewst-black">Form Name</h2>
+                <a id="selected-form-link" href="#" target="_blank" class="btn-secondary flex items-center gap-2">
+                  <span class="material-icons">open_in_new</span>
+                  <span>Open in Rewst</span>
+                </a>
+              </div>
+            </div>
+      
+            <!-- Metrics Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+
+              <!-- Total Time Saved -->
+              <div id="form-metric-time"></div>
+
+              <!-- Monetary Value -->
+              <div id="form-metric-value"></div>
+
+              <!-- Total Submissions -->
+              <div id="form-metric-total"></div>
+
+              <!-- Top Organization -->
+              <div id="form-metric-org"></div>
+
+              <!-- Total Tasks Used -->
+              <div id="form-metric-tasks"></div>
+
+              <!-- Average Tasks Used -->
+              <div id="form-metric-avg-tasks"></div>
+
+            </div>
+
+      
+            <!--  
+              ------------------------------------------------------------
+              ## Insights Section (Bar + Doughnut)
+              Displays top input usage and submission distribution
+              ------------------------------------------------------------
+            -->
+            <div id="form-insights" class="mb-6">
+              <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+      
+                <!-- Stacked Bar Chart: Top Inputs -->
+                <div id="form-insight-bar" class="lg:col-span-3 card p-6">
+                  <h3 class="text-lg font-semibold text-rewst-black mb-4">Top Inputs Overview</h3>
+                  <p class="text-sm text-rewst-gray mb-4">
+                    Displays how often each input field is used across all submissions.
+                  </p>
+                  <!-- ChartJS will render here -->
+                </div>
+      
+                <!-- Doughnut Chart: Submitter Breakdown -->
+                <div id="form-insight-doughnut" class="lg:col-span-2 card p-6">
+                  <h3 class="text-lg font-semibold text-rewst-black mb-4">Submission Breakdown</h3>
+                  <p class="text-sm text-rewst-gray mb-4">
+                    View submissions grouped by organization or user.
+                  </p>
+                  <!-- ChartJS will render here -->
+                </div>
+      
+              </div>
+            </div>
+      
+            <!-- Form Submissions Table -->
+            <div id="form-submissions-table" class="mb-6"></div>
+      
+            <!--  
+              ------------------------------------------------------------
+              ## Input Analytics
+              Selector + Input Distribution Chart + Breakdown Table
+              ------------------------------------------------------------
+            -->
+            <div class="card p-6">
+              <h3 class="text-lg font-semibold text-rewst-black mb-4 flex items-center gap-2">
+                <span class="material-icons text-rewst-fandango">input</span>
+                Input Field Analytics
+              </h3>
+      
+              <!-- Input Selector -->
+              <div id="input-selector" class="mb-4"></div>
+      
+              <!-- Input Distribution Chart -->
+              <div id="input-chart" class="mb-6"></div>
+      
+              <!-- Input Breakdown Table -->
+              <div id="input-table"></div>
+            </div>
+      
+          </div> <!-- /form-display-area -->
+      
+        </div> <!-- /px-8 -->
+      </div> <!-- /page-forms -->
+      
+      <!--  
+
+        ------------------------ 
+
+        ## Adoption Dashboard
+        Shows organization-level adoption metrics and form usage patterns
+
+        ------------------------ 
+
+      -->
+<div id="page-adoption" class="page-content hidden">
+  
+<!-- Metric Cards Grid (6 cards) -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+  <div id="adoption-metric-total-orgs"></div>
+  <div id="adoption-metric-active-orgs"></div>
+  <div id="adoption-metric-adoption-rate"></div>
+  <div id="adoption-metric-avg-forms"></div>
+  <div id="adoption-metric-unique-forms"></div>
+  <div id="adoption-metric-power-users"></div>
+</div>
+
+  <!-- Charts Row -->
+  <div class="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-8">
+    <!-- Left Chart (3/5) -->
+    <div class="card lg:col-span-3">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold flex items-center gap-2">
+          <span class="material-icons text-rewst-teal">show_chart</span>
+          <span id="adoption-chart-title-left">Form Submissions Over Time</span>
+        </h3>
+        <select id="adoption-chart-left-selector" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:border-rewst-teal">
+          <option value="forms">Most Popular Forms</option>
+          <option value="timeline">Submissions Over Time</option>
+        </select>
+      </div>
+      <div id="adoption-chart-left"></div>
+    </div>
+
+    <!-- Right Doughnut (2/5) -->
+    <div class="card lg:col-span-2">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-lg font-semibold flex items-center gap-2">
+          <span class="material-icons text-rewst-fandango">pie_chart</span>
+          <span id="adoption-doughnut-title">Form Submissions per Org</span>
+        </h3>
+        <select id="adoption-doughnut-selector" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:border-rewst-teal">
+          <option value="submissions">Form Submissions</option>
+          <option value="time">Time Saved</option>
+        </select>
+      </div>
+      <div id="adoption-chart-right"></div>
+    </div>
+  </div>
+
+  <!-- Table Section -->
+  <div class="space-y-6">
+    <div id="adoption-table-orgs"></div>
+  </div>
+
+</div>
+
+      <!--  
+
+        ------------------------ 
+
+        ## Insights Page
+        Anomolies and call outs for things that might be wrong
+
+        ------------------------ 
+
+      -->
+      <div id="page-insights" class="page-content" style="display: none;">
+        
+        <!-- Date Range Header -->
+        <div id="insights-date-range" class="mb-6">
+          <p class="text-sm text-rewst-gray">Loading insights...</p>
+        </div>
+
+        <!-- Warning for insufficient data -->
+        <div id="insights-warning" class="mb-6" style="display: none;">
+          <div class="card card-warning">
+            <div class="flex items-center gap-3">
+              <span class="material-icons text-rewst-orange text-2xl">warning</span>
+              <div>
+                <h4 class="font-semibold text-rewst-dark-gray">Insufficient Data Range</h4>
+                <p class="text-sm text-rewst-gray mt-1">Please select at least 7 days of data for meaningful insights. Adjust your date range filter.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Summary Metric Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          <div id="insight-metric-attention"></div>
+          <div id="insight-metric-optimization"></div>
+          <div id="insight-metric-activity"></div>
+          <div id="insight-metric-missing"></div>
+        </div>
+
+        <!-- Needs Attention Section -->
+        <div id="insights-attention-section" class="mb-8">
+          <h2 class="text-xl font-semibold text-rewst-dark-gray mb-4 flex items-center gap-2">
+            <span class="material-icons text-rewst-bask">error</span>
+            Needs Attention
+          </h2>
+          <div id="insights-attention-cards" class="space-y-4">
+            <!-- Cards will be inserted here -->
+          </div>
+        </div>
+
+        <!-- Optimization Opportunities Section -->
+        <div id="insights-optimization-section" class="mb-8">
+          <h2 class="text-xl font-semibold text-rewst-dark-gray mb-4 flex items-center gap-2">
+            <span class="material-icons text-rewst-orange">schedule</span>
+            Long Executions
+          </h2>
+          <div id="insights-optimization-cards" class="space-y-4">
+            <!-- Cards will be inserted here -->
+          </div>
+        </div>
+
+        <!-- Low Activity Section -->
+        <div id="insights-activity-section" class="mb-8">
+          <h2 class="text-xl font-semibold text-rewst-dark-gray mb-4 flex items-center gap-2">
+            <span class="material-icons text-rewst-snooze">bedtime</span>
+            Low Activity
+          </h2>
+          <div id="insights-activity-cards" class="space-y-4">
+            <!-- Cards will be inserted here -->
+          </div>
+        </div>
+
+      <!-- Missing Data Section -->
+      <div id="insights-missing-section" class="mb-8">
+        <h2 class="text-xl font-semibold text-rewst-dark-gray mb-4 flex items-center gap-2">
+          <span class="material-icons text-rewst-fandango">timer_off</span>
+          Missing Time Savings
+        </h2>
+        <div id="insights-missing-cards" class="space-y-4">
+          <!-- Cards will be inserted here -->
+        </div>
+      </div>
+
+      </div>
+      
+    </div>
+    
+  </div>
+  <script type="module">
+    console.log("✅ Dashboard script loading...");
+
+    // Import RewstApp GraphQL library
+    {{ GRAPHQL_LIB }}
+
+    // Import RewstDOM builder
+    {{ DOM_BUILDER }}
+
+          // Dashboard initialization script
+    (async function() {
+      console.log("🚀 Initializing Analytics Dashboard");
+
+
+      // GLOBAL CONFIGURATION
+      const DAYS_TO_FETCH = 30;
+      const CACHE_VERSION = '1.4'; // Increment this to invalidate all caches
+      const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+      const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
+      
+      // set glbal debug flag
+      window.DEBUG_MODE = true; // Set to true when debugging
+      if (window.parent) {
+        window.parent.DEBUG_MODE = true;
+      }
+
+      // Generate cache key based on days parameter (includes org ID for proper cache isolation)
+      function getCacheKey(days, orgId = null) {
+        const org = orgId || rewst?.getOrgId() || 'unknown';
+        return `${CACHE_KEY_PREFIX}_${org}_${days}_v${CACHE_VERSION}`;
+      }
+
+      // Initialize RewstApp
+      const rewst = new RewstApp({ debug: window.DEBUG_MODE });
+      
+      try {
+        await rewst.init();
+        console.log("✅ RewstApp initialized");
+      } catch (error) {
+        console.error("❌ Failed to initialize RewstApp:", error);
+        RewstDOM.showError("Failed to initialize dashboard");
+        return;
+      }
+
+      // Make globally accessible
+      window.rewst = rewst;
+      window.rewstApp = rewst;
+      window.RewstDOM = RewstDOM;
+      window.DAYS_TO_FETCH = DAYS_TO_FETCH;
+
+      if (window.parent) {
+        window.parent.rewst = rewst;
+        window.parent.rewstApp = rewst;
+        window.parent.RewstDOM = RewstDOM;
+        console.log("✅ Exposed rewst and RewstDOM to parent console");
+      }
+
+      // PAGE CONFIGURATION
+      const pages = {
+        overall: {
+          title: 'Time Saved & Forms',
+          subtitle: 'Analytics dashboard',
+          render: renderOverallPage
+        },
+        workflows: {
+          title: 'Workflow Details',
+          subtitle: 'Detailed workflow analytics',
+          render: renderWorkflowsPage
+        },
+        forms: {
+          title: 'Form Details',
+          subtitle: 'Detailed form analytics',
+          render: renderFormsPage
+        },
+        adoption: {
+          title: 'Adoption',
+          subtitle: 'Detailed company analytics',
+          render: renderAdoptionPage
+        },
+        insights: {
+          title: 'Insights',
+          subtitle: 'Actionable recommendations',
+          render: renderInsightsPage
+        }
+      };
+
+      let currentPage = 'overall';
+
+      // CACHE MANAGEMENT FUNCTIONS
+      
+      function saveToCache(data, days) {
+        try {
+          const cacheKey = getCacheKey(days);
+          const cacheObject = {
+            version: CACHE_VERSION,
+            timestamp: Date.now(),
+            days: days,
+            data: data
+          };
+          localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
+          console.log(`💾 Data cached successfully for ${days} days (key: ${cacheKey})`);
+        } catch (error) {
+          console.warn('⚠️ Failed to cache data:', error);
+          // localStorage might be full or disabled
+        }
+      }
+
+      function loadFromCache(days) {
+        try {
+          const cacheKey = getCacheKey(days);
+          const cached = localStorage.getItem(cacheKey);
+          if (!cached) {
+            console.log(`📭 No cache found for ${days} days`);
+            return null;
+          }
+
+          const cacheObject = JSON.parse(cached);
+          
+          // Check version
+          if (cacheObject.version !== CACHE_VERSION) {
+            console.log('🔄 Cache version mismatch, invalidating');
+            clearCache(days);
+            return null;
+          }
+
+          // Check age
+          const age = Date.now() - cacheObject.timestamp;
+          if (age > CACHE_DURATION) {
+            console.log(`⏰ Cache expired (${Math.round(age / 1000 / 60 / 60)} hours old)`);
+            clearCache(days);
+            return null;
+          }
+
+          console.log(`✅ Valid cache found for ${days} days (${Math.round(age / 1000 / 60)} minutes old)`);
+          return cacheObject.data;
+        } catch (error) {
+          console.warn('⚠️ Failed to load cache:', error);
+          clearCache(days);
+          return null;
+        }
+      }
+
+      function clearCache(days = null) {
+        try {
+          if (days !== null) {
+            // Clear specific day range
+            const cacheKey = getCacheKey(days);
+            localStorage.removeItem(cacheKey);
+            console.log(`🗑️ Cache cleared for ${days} days`);
+          } else {
+            // Clear ALL dashboard caches
+            const keysToRemove = [];
+            for (let i = 0; i < localStorage.length; i++) {
+              const key = localStorage.key(i);
+              if (key && key.startsWith(CACHE_KEY_PREFIX)) {
+                keysToRemove.push(key);
+              }
+            }
+            keysToRemove.forEach(key => localStorage.removeItem(key));
+            console.log(`🗑️ Cleared ${keysToRemove.length} dashboard cache(s)`);
+          }
+        } catch (error) {
+          console.warn('⚠️ Failed to clear cache:', error);
+        }
+      }
+
+      function getCacheInfo(days) {
+        try {
+          const cacheKey = getCacheKey(days);
+          const cached = localStorage.getItem(cacheKey);
+          if (!cached) return null;
+          
+          const cacheObject = JSON.parse(cached);
+          const age = Date.now() - cacheObject.timestamp;
+          
+          return {
+            days: cacheObject.days,
+            version: cacheObject.version,
+            age: age,
+            ageMinutes: Math.round(age / 1000 / 60),
+            ageHours: Math.round(age / 1000 / 60 / 60),
+            isValid: cacheObject.version === CACHE_VERSION && age < CACHE_DURATION
+          };
+        } catch {
+          return null;
+        }
+      }
+
+      function getAllCacheKeys() {
+        const keys = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith(CACHE_KEY_PREFIX)) {
+            keys.push(key);
+          }
+        }
+        return keys;
+      }
+
+
+      // Add this flag right after loadDashboard()
+      let isFirstRender = true;
+      // Generic function to animate all metric cards on page
+      function animateAllMetrics() {
+        // Check if we've already animated this session
+        if (!isFirstRender) return;
+        
+        setTimeout(() => {
+          // Find all metric card value elements
+          const metricValues = document.querySelectorAll('.card-metric .text-4xl');
+          
+          metricValues.forEach(valueEl => {
+            const finalValue = valueEl.textContent;
+            if (finalValue && finalValue !== '0') {
+              RewstDOM.animateNumber(valueEl, finalValue, 1000);
+            }
+          });
+          
+          isFirstRender = false; // Prevent future animations
+        }, 150);
+      }
+
+      /* ============================================================
+      * UNIVERSAL TIME FORMATTING HELPER
+      * Formats seconds into human-readable time with proper units
+      * Used across all dashboard pages for consistency
+      * ============================================================ */
+      function formatTimeSaved(seconds) {
+        const s = parseFloat(seconds || 0);
+        if (!s || s === 0) return '—';
+        
+        // Less than 1 minute: show seconds
+        if (s < 60) {
+          return s.toFixed(1) + 's';
+        }
+        
+        // Less than 1 hour: show minutes
+        const minutes = s / 60;
+        if (minutes < 60) {
+          return minutes.toFixed(1) + 'm';
+        }
+        
+        // 1+ hours: show hours with comma formatting for thousands
+        const hours = minutes / 60;
+        if (hours < 1000) {
+          return hours.toFixed(1) + 'h';
+        }
+        
+        // Thousands of hours: add commas
+        return hours.toLocaleString('en-US', { 
+          minimumFractionDigits: 1, 
+          maximumFractionDigits: 1 
+        }) + 'h';
+      }
+
+      // Make navigation functions globally accessible for onclick handlers
+      window.navigateToWorkflowDetail = function(workflowId) {
+        switchPage('workflows');
+        
+        setTimeout(() => {
+          const workflow = window.dashboardData.workflows.find(w => w.id === workflowId);
+          if (workflow) {
+            renderSelectedWorkflow(workflow, getFilteredExecutions());
+            
+            // Scroll to the workflow header with offset for sticky header
+            const header = document.getElementById('selected-workflow-name');
+            if (header) {
+              const headerOffset = 100; // Adjust this value based on your sticky header height
+              const elementPosition = header.getBoundingClientRect().top;
+              const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+              
+              window.scrollTo({
+                top: offsetPosition,
+                behavior: 'smooth'
+              });
+            }
+          }
+        }, 100);
+      };
+
+      window.navigateToFormDetail = function(formId) {
+        switchPage('forms');
+
+        setTimeout(() => {
+          const allExecutions = window.dashboardData.executions || [];
+
+          // Helper to check if execution is a form submission (with fallback)
+          const isFormSubmission = (e) => {
+            if (e.workflow?.type === 'OPTION_GENERATOR') return false;
+            const t = e.triggerInfo?.type || e.triggerInfo?.Type || '';
+            if (String(t).toLowerCase() === 'form submission') return true;
+            // Fallback: check workflow.triggers
+            if (e.workflow?.triggers) {
+              const formTrigger = e.workflow.triggers.find(tr =>
+                (tr.triggerType?.name === 'Form Submission' || tr.triggerType?.ref?.includes('form')) &&
+                tr.formId
+              );
+              if (formTrigger) return true;
+            }
+            return false;
+          };
+
+          // Helper to get formId from execution (with fallback)
+          const getExecFormId = (e) => {
+            if (e.triggerInfo?.formId) return e.triggerInfo.formId;
+            if (e.form?.id) return e.form.id;
+            if (e.workflow?.triggers) {
+              const formTrigger = e.workflow.triggers.find(tr =>
+                tr.triggerType?.name === 'Form Submission' || tr.triggerType?.ref?.includes('form')
+              );
+              if (formTrigger?.formId) return formTrigger.formId;
+            }
+            return null;
+          };
+
+          const formExecutions = allExecutions.filter(isFormSubmission);
+
+          const form = formExecutions.find(e => getExecFormId(e) === formId);
+
+          if (form) {
+            // Get form name with multiple fallbacks
+            let formName = getFormName(form);
+            // If still no name, try direct lookup from forms cache
+            if (!formName || formName === 'Unknown Form') {
+              const cachedForm = window.dashboardData?.forms?.find(f => f.id === formId);
+              if (cachedForm?.name) formName = cachedForm.name;
+            }
+            // Final fallback: use workflow name
+            if (!formName || formName === 'Unknown Form') {
+              formName = form.workflow?.name || 'Unknown Form';
+            }
+
+            const formObj = {
+              id: formId,
+              name: formName
+            };
+            renderSelectedForm(formObj);
+            
+            // Scroll to the form header with offset for sticky header
+            const header = document.getElementById('selected-form-name');
+            if (header) {
+              const headerOffset = 100; // Adjust this value based on your sticky header height
+              const elementPosition = header.getBoundingClientRect().top;
+              const offsetPosition = elementPosition + window.pageYOffset - headerOffset;
+              
+              window.scrollTo({
+                top: offsetPosition,
+                behavior: 'smooth'
+              });
+            }
+          }
+        }, 100);
+      };
+
+      //==============================
+      //
+      //   ADVANCED FILTER AREA
+      //
+      // ==============================
+        
+
+      // Initialize advanced filters (call this after dashboard data is loaded)
+async function initializeAdvancedFilters() {
+  if (!window.dashboardData) return;
+
+  // Check if containers exist
+  const orgContainer = document.getElementById('org-filter-container');
+  const dateContainer = document.getElementById('date-filter-container');
+  const triggerContainer = document.getElementById('trigger-filter-container');
+  
+  if (!orgContainer || !dateContainer || !triggerContainer) {
+    console.error('Filter containers not found in DOM');
+    return;
+  }
+
+  // Clear existing content
+  orgContainer.innerHTML = '';
+  dateContainer.innerHTML = '';
+  triggerContainer.innerHTML = '';
+
+  // Initialize filter state
+  if (!window.filterState) {
+    window.filterState = {};
+  }
+
+  try {
+    // Get managed organizations (includes current org)
+    const allOrgs = await rewst.getManagedOrganizations();
+    const sortedOrgs = allOrgs.sort((a, b) => a.name.localeCompare(b.name));
+    const currentOrgId = rewst.getOrgId();
+    const currentOrg = sortedOrgs.find(o => o.id === currentOrgId);
+    
+    // Organization autocomplete (searchable, starts empty with current org as placeholder)
+    const orgAutocomplete = RewstDOM.createAutocomplete(sortedOrgs, {
+      labelKey: 'name',
+      valueKey: 'id',
+      placeholder: currentOrg ? currentOrg.name : 'Select organization',
+      showClearButton: true,
+      onSelect: (org) => {
+        // If cleared, default back to current org
+        window.filterState.selectedOrgId = org ? org.id : currentOrgId;
+        applyFilters();
+      }
+    });
+    RewstDOM.place(orgAutocomplete, '#org-filter-container');
+    window.filterState.selectedOrgId = currentOrgId;
+
+    // Date range styled dropdown (single-select with nice styling)
+    const dateDropdown = RewstDOM.createStyledDropdown(
+      [
+        { value: '7', label: 'Last 7 days' },
+        { value: '14', label: 'Last 14 days' },
+        { value: '30', label: 'Last 30 days' }
+      ],
+      {
+        defaultValue: '30',
+        onChange: (selectedOption, value) => {
+          window.filterState.dateRange = parseInt(value);
+          applyFilters();
+        }
+      }
+    );
+    RewstDOM.place(dateDropdown, '#date-filter-container');
+    window.filterState.dateRange = 30;
+
+    // Extract unique trigger types from actual execution data
+    const triggerTypes = _.uniqBy(
+      window.dashboardData.executions
+        .map(e => e.triggerInfo?.type)
+        .filter(t => t) // Remove null/undefined
+        .map(t => ({ value: t, label: t })),
+      'value'
+    ).sort((a, b) => a.label.localeCompare(b.label));
+
+    // Trigger type multiselect
+    const triggerMultiSelect = RewstDOM.createMultiSelect(
+      triggerTypes,
+      {
+        placeholder: 'All trigger types',
+        defaultValues: [],
+        onChange: (selectedValues) => {
+          window.filterState.triggerTypes = selectedValues;
+          applyFilters();
+        }
+      }
+    );
+    RewstDOM.place(triggerMultiSelect, '#trigger-filter-container');
+    window.filterState.triggerTypes = [];
+    
+  } catch (error) {
+    console.error('Error initializing filters:', error);
+  }
+}
+
+      // Apply filters and re-render current page
+      function applyFilters() {
+        pages[currentPage].render();
+      }
+
+      // Sidebar toggle functionality
+      const sidebar = document.getElementById('sidebar');
+      const mainContent = document.getElementById('main-content');
+      const toggleBtn = document.getElementById('toggle-sidebar');
+      const toggleIcon = toggleBtn.querySelector('.material-icons');
+      
+      toggleBtn.addEventListener('click', () => {
+        sidebar.classList.toggle('collapsed');
+        mainContent.classList.toggle('sidebar-collapsed');
+        toggleIcon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+      });
+
+      // Page navigation
+      const navLinks = document.querySelectorAll('.sidebar-item');
+      const pageContainers = document.querySelectorAll('.page-content');
+      
+      navLinks.forEach(link => {
+        link.addEventListener('click', (e) => {
+          e.preventDefault();
+          const pageName = link.dataset.page;
+          switchPage(pageName);
+        });
+      });
+
+      function switchPage(pageName) {
+        if (!pages[pageName]) return;
+        
+        currentPage = pageName;
+        
+        // Update active state in sidebar
+        navLinks.forEach(l => l.classList.remove('active'));
+        document.querySelector(`[data-page="${pageName}"]`).classList.add('active');
+        
+        // Hide all pages
+        pageContainers.forEach(page => page.style.display = 'none');
+        
+        // Show selected page
+        document.getElementById(`page-${pageName}`).style.display = 'block';
+        
+        // Update header
+        const pageConfig = pages[pageName];
+        document.querySelector('#sticky-header h1').textContent = pageConfig.title;
+        document.querySelector('#sticky-header .header-subtitle').textContent = pageConfig.subtitle;
+        
+        // Render page content
+        pageConfig.render();
+      }
+
+      // Sticky header scroll behavior with hysteresis and scroll accumulation to prevent flickering
+      const stickyHeader = document.getElementById('sticky-header');
+      let lastScrollTop = 0;
+      let isHeaderHidden = false;
+      let isScrolledState = false;
+      let scrollAccumulator = 0;
+      let scrollTimeout = null;
+
+      // Thresholds with hysteresis (dead zones to prevent flickering)
+      const SCROLL_THRESHOLD = 50;
+      const SCROLL_HYSTERESIS = 30; // Must scroll 30px past threshold to toggle back
+      const HIDE_THRESHOLD = 150;
+      const SCROLL_ACCUMULATOR_THRESHOLD = 100; // Must accumulate 100px of scroll in one direction to hide/show
+      const SCROLL_RESET_DELAY = 200; // Reset accumulator after 200ms of no scrolling
+
+      window.addEventListener('scroll', () => {
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+        const scrollDelta = scrollTop - lastScrollTop;
+
+        // Reset accumulator if scroll direction changes
+        if ((scrollAccumulator > 0 && scrollDelta < 0) || (scrollAccumulator < 0 && scrollDelta > 0)) {
+          scrollAccumulator = 0;
+        }
+        scrollAccumulator += scrollDelta;
+
+        // Reset accumulator after pause in scrolling
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(() => {
+          scrollAccumulator = 0;
+        }, SCROLL_RESET_DELAY);
+
+        // Add scrolled class with hysteresis to prevent flickering near threshold
+        if (!isScrolledState && scrollTop > SCROLL_THRESHOLD) {
+          isScrolledState = true;
+          stickyHeader.classList.add('scrolled');
+        } else if (isScrolledState && scrollTop < (SCROLL_THRESHOLD - SCROLL_HYSTERESIS)) {
+          isScrolledState = false;
+          stickyHeader.classList.remove('scrolled');
+        }
+
+        // Handle hide/show only after accumulating enough scroll in one direction
+        if (scrollTop > HIDE_THRESHOLD) {
+          // We're far enough down to potentially hide
+          if (scrollAccumulator > SCROLL_ACCUMULATOR_THRESHOLD && !isHeaderHidden) {
+            // Hide it smoothly after enough downward scroll
+            isHeaderHidden = true;
+            stickyHeader.classList.remove('show-instant');
+            stickyHeader.classList.add('hide-smooth');
+            scrollAccumulator = 0;
+          } else if (scrollAccumulator < -SCROLL_ACCUMULATOR_THRESHOLD && isHeaderHidden) {
+            // Show it instantly after enough upward scroll
+            isHeaderHidden = false;
+            stickyHeader.classList.remove('hide-smooth');
+            stickyHeader.classList.add('show-instant');
+            scrollAccumulator = 0;
+          }
+        } else if (scrollTop < (HIDE_THRESHOLD - SCROLL_HYSTERESIS)) {
+          // We're clearly near the top - always show instantly
+          if (isHeaderHidden) {
+            isHeaderHidden = false;
+            stickyHeader.classList.remove('hide-smooth');
+            stickyHeader.classList.add('show-instant');
+            scrollAccumulator = 0;
+          }
+        }
+
+        lastScrollTop = scrollTop;
+      }, { passive: true });
+
+
+      // Load dashboard data
+      async function loadDashboard(forceRefresh = false) {
+        try {
+          console.log("📊 Loading dashboard data...");
+          
+          // Show loading overlay
+          showLoadingOverlay();
+          
+          // Hide exclude test runs toggle during loading
+          const excludeTestToggle = document.getElementById('exclude-test-toggle');
+          if (excludeTestToggle) {
+            excludeTestToggle.style.display = 'none';
+          }
+          
+          // Show button skeletons
+          RewstDOM.showButtonSkeleton('#refresh-button-container', 130, 52);
+          RewstDOM.showButtonSkeleton('#filter-button-container', 130, 52);
+          
+          // Show skeletons for current page
+          if (currentPage === 'overall') {
+            RewstDOM.showMetricSkeleton('#metric-total-hours');
+            RewstDOM.showMetricSkeleton('#metric-total-forms');
+            RewstDOM.showMetricSkeleton('#metric-success-rate');
+            RewstDOM.showMetricSkeleton('#metric-avg-time-saved');
+            RewstDOM.showMetricSkeleton('#metric-form-submissions');
+            RewstDOM.showMetricSkeleton('#metric-form-completion');
+            RewstDOM.showChartSkeleton('#chart-time-trend', '300px');
+            RewstDOM.showChartSkeleton('#chart-form-types', '300px');
+            RewstDOM.showTableSkeleton('#table-top-workflows', 5);
+            RewstDOM.showTableSkeleton('#table-form-submissions', 5);
+            RewstDOM.showTableSkeleton('#table-executions', 5);
+          }
+
+          // Try cache first (unless force refresh)
+          if (!forceRefresh) {
+            const cachedData = loadFromCache(DAYS_TO_FETCH);
+            if (cachedData) {
+              console.log('⚡ Loading from cache');
+              window.dashboardData = cachedData;
+              
+              // Restore buttons
+              restoreButtons();
+              if (excludeTestToggle) excludeTestToggle.style.display = '';
+              
+              initializeAdvancedFilters()
+              pages[currentPage].render();
+              
+              // Hide loading overlay
+              hideLoadingOverlay();
+              return;
+            }
+          } else {
+            clearCache();
+            console.log('🔄 Force refresh - bypassing cache and clearing all caches');
+          }
+
+          // No cache or force refresh - fetch fresh data
+          await fetchFreshData(DAYS_TO_FETCH, false);
+          
+          // Restore buttons and toggle after data loads
+          restoreButtons();
+          if (excludeTestToggle) excludeTestToggle.style.display = '';
+          
+          // Hide loading overlay
+          hideLoadingOverlay();
+
+        } catch (error) {
+          console.error("❌ Failed to load dashboard:", error);
+          restoreButtons();
+          const excludeTestToggle = document.getElementById('exclude-test-toggle');
+          if (excludeTestToggle) excludeTestToggle.style.display = '';
+          
+          // Hide loading overlay on error
+          hideLoadingOverlay();
+          
+          RewstDOM.showError('Failed to load dashboard: ' + error.message);
+        }
+      }
+
+      // Helper: Get formId from execution with multiple fallback sources
+      function getFormId(exec) {
+        if (exec.triggerInfo?.formId) {
+          return exec.triggerInfo.formId;
+        }
+        // Fallback: get formId from workflow's Form Submission trigger
+        if (exec.workflow?.triggers) {
+          const formTrigger = exec.workflow.triggers.find(t =>
+            t.triggerType?.name === 'Form Submission' ||
+            t.triggerType?.ref?.includes('form')
+          );
+          if (formTrigger?.formId) {
+            return formTrigger.formId;
+          }
+        }
+        return null;
+      }
+
+      // Helper: Get form name with fallback to dashboardData.forms lookup
+      function getFormName(exec) {
+        // First check for async-resolved form name (from fetchMissingFormNames)
+        if (exec._resolvedFormName) {
+          return exec._resolvedFormName;
+        }
+        // Try triggerInfo first
+        if (exec.triggerInfo?.formName) {
+          return exec.triggerInfo.formName;
+        }
+        // Fallback: lookup from dashboardData.forms using formId
+        const formId = getFormId(exec);
+        if (formId && window.dashboardData?.forms) {
+          const form = window.dashboardData.forms.find(f => f.id === formId);
+          if (form?.name) return form.name;
+        }
+        // Final fallback: use workflow name
+        if (exec.workflow?.name) {
+          return exec.workflow.name;
+        }
+        return 'Unknown Form';
+      }
+
+      /**
+       * Fetch missing form names via GraphQL for form submissions that don't have formName
+       */
+      async function fetchMissingFormNames() {
+        if (!window.dashboardData?.executions) return;
+
+        const missingFormNames = [];
+        for (const exec of window.dashboardData.executions) {
+          const triggerType = exec.triggerInfo?.type || exec.triggerInfo?.Type || '';
+          const isFormSubmission = String(triggerType).toLowerCase() === 'form submission';
+
+          if (!isFormSubmission) continue;
+          if (exec.triggerInfo?.formName) continue;
+
+          const formId = getFormId(exec);
+          if (!formId) continue;
+
+          const cachedForm = window.dashboardData.forms?.find(f => f.id === formId);
+          if (cachedForm?.name) {
+            exec._resolvedFormName = cachedForm.name;
+            continue;
+          }
+
+          const orgId = exec.organization?.id;
+          if (!orgId) continue;
+
+          missingFormNames.push({ exec, formId, orgId });
+        }
+
+        if (missingFormNames.length === 0) {
+          console.log('📋 No missing form names to fetch');
+          return;
+        }
+
+        console.log(`📋 Fetching ${missingFormNames.length} missing form names...`);
+
+        const byOrg = {};
+        for (const item of missingFormNames) {
+          if (!byOrg[item.orgId]) {
+            byOrg[item.orgId] = new Map();
+          }
+          byOrg[item.orgId].set(item.formId, item);
+        }
+
+        const formNameCache = {};
+        let fetchedCount = 0;
+        let errorCount = 0;
+
+        const orgPromises = Object.entries(byOrg).map(async ([orgId, formMap]) => {
+          const formIds = Array.from(formMap.keys());
+
+          for (const formId of formIds) {
+            if (formNameCache[formId]) continue;
+
+            try {
+              const response = await fetch('/graphql', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  query: `query GetForm($id: ID!, $orgId: ID) {
+                    form(where: { id: $id }, orgContextId: $orgId) {
+                      id
+                      name
+                    }
+                  }`,
+                  variables: { id: formId, orgId: orgId }
+                })
+              });
+
+              const data = await response.json();
+              if (data?.data?.form?.name) {
+                formNameCache[formId] = data.data.form.name;
+                fetchedCount++;
+              }
+            } catch (err) {
+              errorCount++;
+              console.warn(`Failed to fetch form ${formId}:`, err.message);
+            }
+          }
+        });
+
+        await Promise.all(orgPromises);
+
+        let updatedCount = 0;
+        for (const { exec, formId } of missingFormNames) {
+          if (formNameCache[formId]) {
+            exec._resolvedFormName = formNameCache[formId];
+            updatedCount++;
+          }
+        }
+
+        console.log(`✅ Fetched ${fetchedCount} form names, updated ${updatedCount} executions${errorCount > 0 ? `, ${errorCount} errors` : ''}`);
+
+        if (updatedCount > 0 && pages[currentPage]) {
+          pages[currentPage].render();
+        }
+      }
+
+      // Helper function to restore buttons after loading
+      function restoreButtons() {
+        document.getElementById('refresh-button-container').innerHTML = `
+          <button id="refresh-dashboard" class="btn-primary flex items-center gap-2">
+            <span class="material-icons">refresh</span>
+            <span class="btn-text">Refresh</span>
+          </button>
+        `;
+        
+        document.getElementById('filter-button-container').innerHTML = `
+          <button id="open-filter-drawer" class="btn-secondary flex items-center gap-2">
+            <span class="material-icons">filter_list</span>
+            <span class="btn-text">Filters</span>
+          </button>
+        `;
+        
+        // Re-attach event listeners
+        document.getElementById('refresh-dashboard').addEventListener('click', async () => {
+          console.log('🔄 Manual refresh triggered');
+          await loadDashboard(true);
+          RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+        });
+        
+        document.getElementById('open-filter-drawer').addEventListener('click', () => {
+          filterOverlay.classList.add('open');
+          filterDrawer.classList.add('open');
+        });
+      }
+
+      // ==========================================
+      // LOADING OVERLAY FUNCTIONS
+      // ==========================================
+
+      let morphTimeline = null;
+
+      function showLoadingOverlay() {
+        const overlay = document.getElementById('loading-overlay');
+        if (overlay) {
+          overlay.classList.remove('hidden');
+          startMorphAnimation();
+        }
+      }
+
+      function hideLoadingOverlay() {
+        const overlay = document.getElementById('loading-overlay');
+        if (overlay) {
+          overlay.classList.add('hidden');
+          stopMorphAnimation();
+        }
+      }
+  
+      // ==========================================
+// LOGO LOADING ANIMATION WITH ANIME.JS
+// ==========================================
+
+let logoTimeline = null;
+let backgroundRotation = null;
+
+function startMorphAnimation() {
+  if (typeof anime === 'undefined') {
+    console.warn('Anime.js not loaded, skipping logo animation');
+    return;
+  }
+  
+  if (logoTimeline) {
+    if (logoTimeline.main) logoTimeline.main.pause();
+    if (backgroundRotation) backgroundRotation.pause();
+  }
+  
+  const logo = document.querySelector('#loading-logo');
+  if (!logo) {
+    console.warn('Logo element not found');
+    return;
+  }
+  
+  // Reset logo position for drop
+  logo.style.transform = 'translateY(-200px)';
+  logo.style.opacity = '1';
+  
+  logoTimeline = anime.timeline({
+    autoplay: true,
+    loop: false
+  });
+  
+  // ========================================
+  // PHASE 1: DROP IN WITH BOUNCE (once)
+  // ========================================
+  logoTimeline
+    .add({
+      targets: '#loading-logo',
+      translateY: [
+        { value: -200, duration: 0 },
+        { value: 0, duration: 600, easing: 'easeInQuad' }
+      ],
+      complete: function() {
+        // Start bounce sequence with squash on impact
+        anime({
+          targets: '#loading-logo',
+          translateY: [
+            { value: 0, duration: 0 },
+            { value: -30, duration: 200, easing: 'easeOutQuad' },
+            { value: 0, duration: 200, easing: 'easeInQuad' },
+            { value: -15, duration: 150, easing: 'easeOutQuad' },
+            { value: 0, duration: 150, easing: 'easeInQuad' },
+            { value: -5, duration: 100, easing: 'easeOutQuad' },
+            { value: 0, duration: 100, easing: 'easeInQuad' }
+          ],
+          scaleY: [
+            { value: 1, duration: 0 },
+            // First big squash on landing
+            { value: 0.6, duration: 100, easing: 'easeOutQuad' },
+            { value: 1.1, duration: 150, easing: 'easeOutElastic(1, .5)' },
+            // Second bounce squash
+            { value: 0.75, duration: 75, easing: 'easeOutQuad' },
+            { value: 1.05, duration: 125, easing: 'easeOutElastic(1, .5)' },
+            // Third small squash
+            { value: 0.9, duration: 50, easing: 'easeOutQuad' },
+            { value: 1, duration: 100, easing: 'easeOutQuad' }
+          ],
+          scaleX: [
+            { value: 1, duration: 0 },
+            // Widen when squashed
+            { value: 1.3, duration: 100, easing: 'easeOutQuad' },
+            { value: 0.95, duration: 150, easing: 'easeOutElastic(1, .5)' },
+            // Second bounce widen
+            { value: 1.2, duration: 75, easing: 'easeOutQuad' },
+            { value: 0.98, duration: 125, easing: 'easeOutElastic(1, .5)' },
+            // Third small widen
+            { value: 1.05, duration: 50, easing: 'easeOutQuad' },
+            { value: 1, duration: 100, easing: 'easeOutQuad' }
+          ],
+          complete: function() {
+            // After settling, start the main loop
+            startLogoLoop();
+          }
+        });
+      }
+    });
+}
+
+function startLogoLoop() {
+  const loopTimeline = anime.timeline({
+    autoplay: true,
+    loop: true
+  });
+  
+  // ========================================
+  // PHASE 2: ELASTIC SCALE PULSE
+  // ========================================
+  loopTimeline
+    .add({
+      targets: '#loading-logo',
+      scale: [
+        { value: 1, duration: 0 },
+        { value: 1.15, duration: 500, easing: 'easeOutElastic(1, .6)' },
+        { value: 1, duration: 400, easing: 'easeInOutQuad' }
+      ]
+    })
+    
+    // Pause at normal
+    .add({
+      targets: '#loading-logo',
+      scale: 1,
+      duration: 200
+    })
+    
+    // ========================================
+    // FAST 360° SPIN BURST
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      rotate: '+=360',
+      duration: 600,
+      easing: 'easeInOutQuad'
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 200
+    })
+    
+    // ========================================
+    // ORBITAL BOUNCE - moves in circular path
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      translateX: [
+        { value: 0, duration: 0 },
+        { value: 20, duration: 200, easing: 'easeInOutQuad' },
+        { value: 0, duration: 200, easing: 'easeInOutQuad' },
+        { value: -20, duration: 200, easing: 'easeInOutQuad' },
+        { value: 0, duration: 200, easing: 'easeInOutQuad' }
+      ],
+      translateY: [
+        { value: 0, duration: 0 },
+        { value: -20, duration: 200, easing: 'easeInOutQuad' },
+        { value: 0, duration: 200, easing: 'easeInOutQuad' },
+        { value: 20, duration: 200, easing: 'easeInOutQuad' },
+        { value: 0, duration: 200, easing: 'easeInOutQuad' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 200
+    })
+    
+    // ========================================
+    // DANCE SEQUENCE - FLIP LEFT & MOVE
+    // ========================================
+    // Flip to face left
+    .add({
+      targets: '#loading-logo',
+      rotateY: [
+        { value: 0, duration: 0 },
+        { value: 180, duration: 300, easing: 'easeInOutQuad' }
+      ]
+    })
+    // Slide left with bounce
+    .add({
+      targets: '#loading-logo',
+      translateX: [
+        { value: 0, duration: 0 },
+        { value: -25, duration: 400, easing: 'easeOutQuad' }
+      ],
+      translateY: [
+        { value: 0, duration: 0 },
+        { value: -8, duration: 200, easing: 'easeOutQuad' },
+        { value: 0, duration: 200, easing: 'easeInQuad' }
+      ]
+    })
+    // Little wobble dance move
+    .add({
+      targets: '#loading-logo',
+      rotate: [
+        { value: '+=0', duration: 0 },
+        { value: '+=8', duration: 100, easing: 'easeInOutQuad' },
+        { value: '-=16', duration: 120, easing: 'easeInOutQuad' },
+        { value: '+=16', duration: 120, easing: 'easeInOutQuad' },
+        { value: '-=8', duration: 100, easing: 'easeInOutQuad' }
+      ],
+      scaleY: [
+        { value: 1, duration: 0 },
+        { value: 0.95, duration: 110, easing: 'easeInOutQuad' },
+        { value: 1.05, duration: 110, easing: 'easeInOutQuad' },
+        { value: 0.95, duration: 110, easing: 'easeInOutQuad' },
+        { value: 1, duration: 110, easing: 'easeInOutQuad' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 150
+    })
+    
+    // ========================================
+    // DANCE SEQUENCE - FLIP RIGHT & MOVE
+    // ========================================
+    // Flip back to face right
+    .add({
+      targets: '#loading-logo',
+      rotateY: [
+        { value: 180, duration: 0 },
+        { value: 360, duration: 300, easing: 'easeInOutQuad' }
+      ]
+    })
+    // Slide right with bounce
+    .add({
+      targets: '#loading-logo',
+      translateX: [
+        { value: -25, duration: 0 },
+        { value: 25, duration: 500, easing: 'easeOutQuad' }
+      ],
+      translateY: [
+        { value: 0, duration: 0 },
+        { value: -10, duration: 250, easing: 'easeOutQuad' },
+        { value: 0, duration: 250, easing: 'easeInQuad' }
+      ]
+    })
+    // Another little wobble dance move
+    .add({
+      targets: '#loading-logo',
+      rotate: [
+        { value: '+=0', duration: 0 },
+        { value: '-=8', duration: 100, easing: 'easeInOutQuad' },
+        { value: '+=16', duration: 120, easing: 'easeInOutQuad' },
+        { value: '-=16', duration: 120, easing: 'easeInOutQuad' },
+        { value: '+=8', duration: 100, easing: 'easeInOutQuad' }
+      ],
+      scaleX: [
+        { value: 1, duration: 0 },
+        { value: 1.05, duration: 110, easing: 'easeInOutQuad' },
+        { value: 0.95, duration: 110, easing: 'easeInOutQuad' },
+        { value: 1.05, duration: 110, easing: 'easeInOutQuad' },
+        { value: 1, duration: 110, easing: 'easeInOutQuad' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 150
+    })
+    
+    // ========================================
+    // FLIP LEFT & WALK BACK TO CENTER
+    // ========================================
+    // Flip to face left again
+    .add({
+      targets: '#loading-logo',
+      rotateY: [
+        { value: 360, duration: 0 },
+        { value: 540, duration: 300, easing: 'easeInOutQuad' }
+      ]
+    })
+    // Walk back to center facing left
+    .add({
+      targets: '#loading-logo',
+      translateX: [
+        { value: 25, duration: 0 },
+        { value: 0, duration: 500, easing: 'easeInOutQuad' }
+      ],
+      translateY: [
+        { value: 0, duration: 0 },
+        { value: -8, duration: 250, easing: 'easeOutQuad' },
+        { value: 0, duration: 250, easing: 'easeInQuad' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 150
+    })
+    
+    // ========================================
+    // FLIP BACK TO FACE RIGHT (RESET)
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      rotateY: [
+        { value: 540, duration: 0 },
+        { value: 720, duration: 300, easing: 'easeInOutQuad' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 200
+    })
+    
+    // ========================================
+    // SQUASH AND STRETCH
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      scaleX: [
+        { value: 1, duration: 0 },
+        { value: 0.85, duration: 300, easing: 'easeInOutQuad' }
+      ],
+      scaleY: [
+        { value: 1, duration: 0 },
+        { value: 1.15, duration: 300, easing: 'easeInOutQuad' }
+      ]
+    })
+    .add({
+      targets: '#loading-logo',
+      scaleX: [
+        { value: 1.15, duration: 300, easing: 'easeInOutQuad' }
+      ],
+      scaleY: [
+        { value: 0.85, duration: 300, easing: 'easeInOutQuad' }
+      ]
+    })
+    .add({
+      targets: '#loading-logo',
+      scaleX: [
+        { value: 1, duration: 400, easing: 'easeOutElastic(1, .6)' }
+      ],
+      scaleY: [
+        { value: 1, duration: 400, easing: 'easeOutElastic(1, .6)' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      scale: 1,
+      scaleX: 1,
+      scaleY: 1,
+      duration: 200
+    })
+    
+    // ========================================
+    // SIDE-TO-SIDE SWAY - gentle drift
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      translateX: [
+        { value: 0, duration: 0 },
+        { value: 20, duration: 700, easing: 'easeInOutSine' },
+        { value: 0, duration: 700, easing: 'easeInOutSine' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 200
+    })
+    
+    // ========================================
+    // 3D FLIP EFFECT
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      rotateY: [
+        { value: 0, duration: 0 },
+        { value: 180, duration: 400, easing: 'easeInQuad' },
+        { value: 360, duration: 400, easing: 'easeOutQuad' }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 200
+    })
+    
+    // ========================================
+    // SPIRAL IN/OUT - scale + rotate together
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      scale: [
+        { value: 1, duration: 0 },
+        { value: 0.6, duration: 500, easing: 'easeInQuad' },
+        { value: 1.2, duration: 500, easing: 'easeOutQuad' },
+        { value: 1, duration: 400, easing: 'easeInOutQuad' }
+      ],
+      rotate: [
+        { value: '+=0', duration: 0 },
+        { value: '+=180', duration: 500, easing: 'easeInQuad' },
+        { value: '+=180', duration: 500, easing: 'easeOutQuad' },
+        { value: '+=0', duration: 400 }
+      ]
+    })
+    
+    // Brief pause
+    .add({
+      targets: '#loading-logo',
+      duration: 200
+    })
+    
+    // ========================================
+    // WOBBLE - rapid jello shake
+    // ========================================
+    .add({
+      targets: '#loading-logo',
+      rotate: [
+        { value: '+=0', duration: 0 },
+        { value: '+=5', duration: 60, easing: 'easeInOutQuad' },
+        { value: '-=10', duration: 80, easing: 'easeInOutQuad' },
+        { value: '+=10', duration: 80, easing: 'easeInOutQuad' },
+        { value: '-=10', duration: 80, easing: 'easeInOutQuad' },
+        { value: '+=10', duration: 80, easing: 'easeInOutQuad' },
+        { value: '-=5', duration: 60, easing: 'easeInOutQuad' }
+      ],
+      scaleX: [
+        { value: 1, duration: 0 },
+        { value: 1.05, duration: 60, easing: 'easeInOutQuad' },
+        { value: 0.95, duration: 80, easing: 'easeInOutQuad' },
+        { value: 1.05, duration: 80, easing: 'easeInOutQuad' },
+        { value: 0.95, duration: 80, easing: 'easeInOutQuad' },
+        { value: 1.05, duration: 80, easing: 'easeInOutQuad' },
+        { value: 1, duration: 60, easing: 'easeInOutQuad' }
+      ]
+    })
+    
+    // Pause before loop repeats - reset all transforms
+    .add({
+      targets: '#loading-logo',
+      scale: 1,
+      scaleX: 1,
+      scaleY: 1,
+      translateX: 0,
+      translateY: 0,
+      rotate: '+=0',
+      rotateY: 0,
+      duration: 400
+    });
+  
+  // Store reference for cleanup
+  logoTimeline = { main: loopTimeline };
+}
+
+function stopMorphAnimation() {
+  if (logoTimeline) {
+    if (logoTimeline.main) {
+      logoTimeline.main.pause();
+    }
+    logoTimeline = null;
+  }
+  if (backgroundRotation) {
+    backgroundRotation.pause();
+    backgroundRotation = null;
+  }
+}
+
+
+
+
+      // Fetch fresh data from API
+      async function fetchFreshData(days, isBackgroundRefresh = false) {
+        try {
+
+          // Get all managed orgs first
+          const managedOrgs = await rewst.getManagedOrganizations();
+          const orgIds = managedOrgs.map(o => o.id);
+
+          // Phase 1: Lightweight queries first (forms, workflows, integrations)
+          // These must complete BEFORE heavy execution batches to avoid timeout competition
+          const [workflows, forms, integrationConfigs] = await Promise.all([
+            rewst.getAllWorkflows(),
+            rewst.getAllForms(),
+            rewst.getIntegrationConfigs()
+          ]);
+          console.log(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
+
+          // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
+          const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, { timeout: 5000 });
+          console.log(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
+
+          const freshData = { workflows, executions, forms, integrationConfigs };
+
+          // Store globally
+          window.dashboardData = freshData;
+
+
+          // Save to cache with days parameter
+          saveToCache(freshData, days);
+
+         // Render (unless background refresh)
+        if (!isBackgroundRefresh) {
+          restoreButtons();
+          const excludeTestToggle = document.getElementById('exclude-test-toggle');
+          if (excludeTestToggle) excludeTestToggle.style.display = '';
+
+          initializeAdvancedFilters();
+          pages[currentPage].render();
+
+          // Hide loading overlay after rendering
+          hideLoadingOverlay();
+
+          // Background retry for any failed trigger info fetches
+          if (rewst._failedExecutionIds?.length > 0) {
+            console.log(`🔄 Retrying ${rewst._failedExecutionIds.length} failed trigger info fetches in background...`);
+            rewst.retryFailedTriggerInfo({ timeout: 20000 }).then(updated => {
+              if (updated && updated.length > 0) {
+                console.log(`✅ Background retry recovered ${updated.length} executions`);
+                // Merge updated executions into dashboardData
+                const updatedIds = new Set(updated.map(e => e.id));
+                window.dashboardData.executions = window.dashboardData.executions.map(e =>
+                  updatedIds.has(e.id) ? updated.find(u => u.id === e.id) : e
+                );
+                // Re-render current page with updated data
+                pages[currentPage].render();
+                // Update cache with new data
+                saveToCache(window.dashboardData, days);
+              }
+            }).catch(err => {
+              console.warn('⚠️ Background retry failed:', err);
+            });
+          }
+
+          // Background fetch missing form names for managed org forms
+          fetchMissingFormNames().catch(err => console.warn('Form name fetch error:', err));
+        }
+        } catch (error) {
+          if (!isBackgroundRefresh) {
+            throw error; // Re-throw if not background
+          } else {
+            console.warn('⚠️ Background refresh failed:', error);
+          }
+        }
+      }
+
+    // HELPER: Get filtered executions based on test run toggle and advanced filters
+    function getFilteredExecutions() {
+      if (!window.dashboardData) return [];
+      let filtered = window.dashboardData.executions;
+      
+      // Test runs filter (existing logic)
+      const excludeTestSwitch = document.getElementById('exclude-test-runs');
+      const excludeTestRuns = excludeTestSwitch ? excludeTestSwitch.checked : false;
+      if (excludeTestRuns) {
+        filtered = filtered.filter(e => !e.triggerInfo?.isTest);
+      }
+      
+      // Organization filter (new)
+      if (window.filterState?.selectedOrgId) {
+        const currentOrgId = rewst.getOrgId();
+        // Only filter if a different org is selected (not current org)
+        if (window.filterState.selectedOrgId !== currentOrgId) {
+          filtered = filtered.filter(e => {
+            const orgId = e.organization?.id || e.triggerInfo?.organization?.id;
+            return orgId === window.filterState.selectedOrgId;
+          });
+        }
+      }
+      
+      // Date range filter (new)
+      if (window.filterState?.dateRange && window.filterState.dateRange < 30) {
+        // Only apply if it's less than 30 (which is our default DAYS_TO_FETCH)
+        const daysAgo = window.filterState.dateRange;
+        const cutoffDate = Date.now() - (daysAgo * 24 * 60 * 60 * 1000);
+        filtered = filtered.filter(e => {
+          const createdAt = parseInt(e.createdAt);
+          return createdAt >= cutoffDate;
+        });
+      }
+      
+        // Trigger type filter (new) - empty array = show all
+        if (window.filterState?.triggerTypes && window.filterState.triggerTypes.length > 0) {
+          filtered = filtered.filter(e => {
+            const triggerType = e.triggerInfo?.type || 'Unknown';
+            return window.filterState.triggerTypes.includes(triggerType);
+          });
+        }
+      
+      return filtered;
+    }
+  
+      //=============================
+      //    Event listeners
+      //=============================
+      document.getElementById('refresh-dashboard').addEventListener('click', async () => {
+        console.log('🔄 Manual refresh triggered');
+        await loadDashboard(true); // Force refresh = true
+        RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+      });
+
+      const toggleSwitch = document.getElementById('exclude-test-runs');
+      const toggleDot = document.querySelector('.toggle-dot');
+      
+      toggleSwitch.addEventListener('change', () => {
+        if (toggleSwitch.checked) {
+          toggleDot.style.transform = 'translateX(24px)';
+        } else {
+          toggleDot.style.transform = 'translateX(0)';
+        }
+        // Re-render current page with new filter
+        pages[currentPage].render();
+      });
+
+      // Advanced filter drawer controls
+      const filterOverlay = document.getElementById('advanced-filter-overlay');
+      const filterDrawer = document.getElementById('advanced-filter-drawer');
+      const openFilterBtn = document.getElementById('open-filter-drawer');
+      const closeFilterBtn = document.getElementById('close-filter-drawer');
+
+      // Open drawer
+      openFilterBtn.addEventListener('click', () => {
+        filterOverlay.classList.remove('hidden');
+        filterOverlay.classList.add('open');
+        filterDrawer.classList.add('open');
+      });
+
+      // Close drawer
+      const closeDrawer = () => {
+        filterOverlay.classList.remove('open');
+        filterDrawer.classList.remove('open');
+        setTimeout(() => {
+          filterOverlay.classList.add('hidden');
+        }, 300); // Wait for animation to finish
+      };
+
+      closeFilterBtn.addEventListener('click', closeDrawer);
+      filterOverlay.addEventListener('click', closeDrawer);
+
+      //=============================
+      //    PAGE RENDER FUNCTIONS
+      //=============================
+      
+      function renderOverallPage() {
+        console.log("📄 Rendering Overall page");
+        // Scroll to top when page loads
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        renderDashboard();
+        animateAllMetrics(); // Animate all metrics on first load only
+      }
+
+      function renderWorkflowsPage() {
+        console.log("📄 Rendering Workflows page");
+        renderWorkflowDetailsDashboard();
+      }
+
+      function renderFormsPage() {
+        console.log("📄 Rendering Forms page");
+        renderFormDetailsDashboard();
+      }
+
+      function renderAdoptionPage() {
+        console.log("📊 Rendering Adoption page");
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        renderAdoptionDashboard();
+      }
+
+      function renderInsightsPage() {       
+        console.log("📊 Rendering Insights page");        
+        // Scroll to top when page loads
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        renderInsightsDashboard();
+      }
+
+      // Render dashboard from cached data (Overall Page)
+      //function renderDashboard()
+      {{ PAGE_OVERALL }}
+
+      // Render the workflow details dashboard code  (Workflow Details Page)
+      //function renderWorkflowDetailsDashboard()
+      {{ PAGE_WORKFLOW }}
+
+      // Render the Form details dashboard code  (Form Details Page)
+      //function renderFormwDetailsDashboard()
+      {{ PAGE_FORM }}
+
+      // Render the Insights details dashboard code  (Insights Details Page)
+      //function renderInsightsDashboard()
+      {{ PAGE_INSIGHTS }}
+
+      // Render the Adoption details dashboard code  (Adoption Details Page)
+      //function renderAdoptionDashboard()
+      {{ PAGE_ADOPTION }}
+
+      // Initialize dashboard
+      await loadDashboard();
+      
+      // Log cache info for debugging
+      const cacheInfo = getCacheInfo(DAYS_TO_FETCH);
+      if (cacheInfo) {
+        console.log(`💾 Cache info: ${cacheInfo.ageMinutes} minutes old, ${cacheInfo.days} days, version ${cacheInfo.version}`);
+      }
+      
+      // Log all cached day ranges
+      const allCaches = getAllCacheKeys();
+      if (allCaches.length > 0) {
+        console.log(`📦 Total cached day ranges: ${allCaches.length}`, allCaches);
+      }
+
+    })();
+  </script>
+
+
+</body>
+</html>
