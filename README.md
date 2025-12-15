@@ -1,59 +1,56 @@
 # Rewst Analytics Dashboard
 
-A comprehensive analytics dashboard for Rewst, built with modular JavaScript components.
+An example of how to use the App Builder inside of the Rewst platform. This dashboard demonstrates building modular JavaScript components that compile into a single HTML file for deployment.
 
 ## Quick Start
 
 ```bash
-# Install dependencies (none required - just Node.js)
-
 # Build the combined dashboard
 node build.js
 
-# Output is in dist/dashboard.html - copy this into Rewst
+# Output: dist/dashboard-spa-main-compiled.html
+# Copy this into Rewst App Builder
 ```
 
 ## Project Structure
 
 ```
 ├── src/
-│   ├── styles/
-│   │   └── theme.css           # Tailwind overrides & Rewst theme
-│   ├── lib/
-│   │   ├── rewst-graphql.js    # GraphQL API wrapper
-│   │   └── rewst-dom.js        # DOM builder utilities
-│   └── pages/
-│       ├── overall.js          # Main dashboard overview
-│       ├── workflow-details.js # Workflow detail view
-│       ├── form-details.js     # Form detail view
-│       ├── insights.js         # Insights page
-│       └── adoption.js         # Adoption metrics page
+│   ├── rewst-override-tailwind.css    # Tailwind overrides & Rewst theme
+│   ├── zip-graphql-js-lib-v2-optimized.js  # GraphQL API wrapper
+│   └── rewst-dom-builder.js           # DOM builder utilities
+├── pages/
+│   ├── overalldash.js                 # Main dashboard overview
+│   ├── workflowdetail.js              # Workflow detail view
+│   ├── formdetail.js                  # Form detail view
+│   ├── insightsdetail.js              # Insights page
+│   └── adoptiondetail.js              # Adoption metrics page
+├── dashboard-spa-main-template.html   # HTML template with markers
 ├── dist/
-│   └── dashboard.html          # Combined output (generated)
-├── build.js                    # Combines src files into dist/
-└── publish.js                  # (Dev) Copies from dev workspace
+│   └── dashboard-spa-main-compiled.html  # Combined output (generated)
+└── build.js                           # Combines files into dist/
 ```
 
 ## How It Works
 
-The `build.js` script takes `src/template.html` and replaces markers like `{{ CSS_THEME }}` with the actual file contents, producing a single `dist/dashboard.html` file ready to paste into Rewst.
+The `build.js` script takes `dashboard-spa-main-template.html` and replaces markers like `{{ CSS_THEME }}` with the actual file contents, producing a single `dist/dashboard-spa-main-compiled.html` file ready to paste into Rewst App Builder.
 
 ## Markers
 
 | Marker | Source File |
 |--------|-------------|
-| `{{ CSS_THEME }}` | src/styles/theme.css |
-| `{{ GRAPHQL_LIB }}` | src/lib/rewst-graphql.js |
-| `{{ DOM_BUILDER }}` | src/lib/rewst-dom.js |
-| `{{ PAGE_OVERALL }}` | src/pages/overall.js |
-| `{{ PAGE_WORKFLOW }}` | src/pages/workflow-details.js |
-| `{{ PAGE_FORM }}` | src/pages/form-details.js |
-| `{{ PAGE_INSIGHTS }}` | src/pages/insights.js |
-| `{{ PAGE_ADOPTION }}` | src/pages/adoption.js |
+| `{{ CSS_THEME }}` | src/rewst-override-tailwind.css |
+| `{{ GRAPHQL_LIB }}` | src/zip-graphql-js-lib-v2-optimized.js |
+| `{{ DOM_BUILDER }}` | src/rewst-dom-builder.js |
+| `{{ PAGE_OVERALL }}` | pages/overalldash.js |
+| `{{ PAGE_WORKFLOW }}` | pages/workflowdetail.js |
+| `{{ PAGE_FORM }}` | pages/formdetail.js |
+| `{{ PAGE_INSIGHTS }}` | pages/insightsdetail.js |
+| `{{ PAGE_ADOPTION }}` | pages/adoptiondetail.js |
 
 ## Customization
 
 1. Fork this repo
-2. Edit the source files in `src/`
+2. Edit the source files in `src/` and `pages/`
 3. Run `node build.js`
-4. Copy `dist/dashboard.html` into your Rewst app
+4. Copy `dist/dashboard-spa-main-compiled.html` into your Rewst App Builder
