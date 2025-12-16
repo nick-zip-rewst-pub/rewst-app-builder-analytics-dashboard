@@ -9,7 +9,7 @@ An example of how to use the App Builder inside of the Rewst platform. This dash
 node build.js
 
 # Output: dist/dashboard-spa-main-compiled.html
-# Copy this into Rewst App Builder
+# Copy this into Rewst App Builder into a HTML component
 ```
 
 ## Project Structure
