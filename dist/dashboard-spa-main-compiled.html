@@ -3389,10 +3389,10 @@ class RewstApp {
   static ORG_BATCH_SIZE = 5;
   // Progressive TIMEOUTS - parallel org batching allows longer timeouts without blocking
   static CHUNK_TIMEOUTS = {
-    6: 5000,     // 5 seconds for 6-day chunks
-    3: 5000,     // 5 seconds for 3-day chunks
-    2: 5000,     // 5 seconds for 2-day chunks
-    1: 5000,     // 5 seconds for 1-day chunks
+    6: 10000,    // 10 seconds for 6-day chunks
+    3: 10000,    // 10 seconds for 3-day chunks
+    2: 10000,    // 10 seconds for 2-day chunks
+    1: 10000,    // 10 seconds for 1-day chunks
     0.5: 55000,  // 55 seconds for 0.5-day chunks (12 hours) - org batches run in parallel
     0.25: 55000, // 55 seconds for 0.25-day chunks (6 hours)
     0.1: 55000   // 55 seconds for 0.1-day chunks (~2.4 hours)
@@ -3614,10 +3614,10 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
   }
 
   const totalBatches = batches.length;
-  const earlyReturnThreshold = Math.ceil(totalBatches * 0.8); // Return when 80% done
-  const maxWaitMs = 15000; // Max 15s before returning with what we have
+  const earlyReturnThreshold = Math.ceil(totalBatches * 0.8); // Return when 80% done (only if we have data)
+  const maxWaitMs = 30000; // Max 30s before returning with what we have
 
-  this._log(`Fetching ${orgIds.length} orgs in ${totalBatches} batches (return early at ${earlyReturnThreshold}/${totalBatches} or ${maxWaitMs/1000}s)`);
+  this._log(`Fetching ${orgIds.length} orgs in ${totalBatches} batches (return early at ${earlyReturnThreshold}/${totalBatches} with data, or ${maxWaitMs/1000}s max)`);
 
   const batchStartTime = Date.now();
   const completedResults = [];
@@ -3645,8 +3645,10 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
             completedResults.push({ results, batchIndex: batchNum, elapsed: parseFloat(elapsed), success: true });
             this._log(`✅ Batch ${batchNum} done in ${elapsed}s: ${results.length} execs (${completedResults.length}/${totalBatches})`);
 
-            // Check if we can return early
-            if (completedResults.length >= earlyReturnThreshold && resolveEarly) {
+            // Check if we can return early - but ONLY if we have some executions
+            // This prevents returning early with 0 results while the batch with all data is still loading
+            const totalExecsSoFar = completedResults.reduce((sum, b) => sum + b.results.length, 0);
+            if (completedResults.length >= earlyReturnThreshold && totalExecsSoFar > 0 && resolveEarly) {
               resolveEarly();
               resolveEarly = null;
             }
@@ -3658,11 +3660,7 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
             completedResults.push({ results: [], batchIndex: batchNum, elapsed: parseFloat(elapsed), success: false });
             this._error(`❌ Batch ${batchNum} FAILED after ${elapsed}s`, error);
 
-            // Still count toward early return
-            if (completedResults.length >= earlyReturnThreshold && resolveEarly) {
-              resolveEarly();
-              resolveEarly = null;
-            }
+            // Don't trigger early return on failures - wait for batches that might have data
             return { results: [], batchIndex: batchNum, success: false };
           });
       });
@@ -3707,8 +3705,27 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
     this._pendingOrgBatches = null;
   }
 
-  // Return what we have now
+  // Check for failures that should trigger adaptive chunk retry
+  const successfulBatches = completedResults.filter(b => b.success);
+  const failedBatches = completedResults.filter(b => !b.success);
   const allExecutions = completedResults.flatMap(b => b.results);
+
+  // If ANY batch failed AND we got 0 total results, retry with smaller chunks
+  // This catches the case where the batch with all the data times out
+  if (failedBatches.length > 0 && allExecutions.length === 0) {
+    throw new Error(`${failedBatches.length} batch(es) failed with 0 total results - will retry with smaller time chunks`);
+  }
+
+  // If ALL batches failed, definitely retry
+  if (successfulBatches.length === 0 && completedResults.length > 0) {
+    throw new Error(`All ${completedResults.length} batch(es) failed - will retry with smaller time chunks`);
+  }
+
+  // Log warning if some batches failed but we got some data
+  if (failedBatches.length > 0 && allExecutions.length > 0) {
+    this._log(`⚠️ ${failedBatches.length} batch(es) failed but got ${allExecutions.length} executions from others`);
+  }
+
   this._log(`Returning ${allExecutions.length} executions (${pendingBatches.size} batches still loading in background)`);
 
   return allExecutions;
