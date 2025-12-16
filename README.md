@@ -4,11 +4,7 @@ An example of how to use the App Builder inside of the Rewst platform. This dash
 
 ## Quick Start
 
-```bash
-node build.js
-```
-
-**Important:** After building, copy the entire contents of `dist/dashboard-spa-main-compiled.html` into a **HTML component** in Rewst App Builder. This single file contains all the CSS, JavaScript, and page logic needed to run the dashboard.
+Copy the entire contents of `dist/dashboard-spa-main-compiled.html` into a **HTML component** in Rewst App Builder. That's it - this single file contains all the CSS, JavaScript, and page logic needed to run the dashboard.
 
 ## Using the Dashboard
 
