@@ -3657,11 +3657,11 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
           .catch(error => {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             pendingBatches.delete(batchNum);
-            completedResults.push({ results: [], batchIndex: batchNum, elapsed: parseFloat(elapsed), success: false });
-            this._error(`❌ Batch ${batchNum} FAILED after ${elapsed}s`, error);
+            completedResults.push({ results: [], batchIndex: batchNum, elapsed: parseFloat(elapsed), success: false, failedOrgIds: batchOrgIds });
+            this._error(`❌ Batch ${batchNum} FAILED after ${elapsed}s (${batchOrgIds.length} orgs)`, error);
 
             // Don't trigger early return on failures - wait for batches that might have data
-            return { results: [], batchIndex: batchNum, success: false };
+            return { results: [], batchIndex: batchNum, success: false, failedOrgIds: batchOrgIds };
           });
       });
   });
@@ -3721,9 +3721,36 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
     throw new Error(`All ${completedResults.length} batch(es) failed - will retry with smaller time chunks`);
   }
 
-  // Log warning if some batches failed but we got some data
+  // If some batches failed but we got data, retry failed orgs individually
   if (failedBatches.length > 0 && allExecutions.length > 0) {
-    this._log(`⚠️ ${failedBatches.length} batch(es) failed but got ${allExecutions.length} executions from others`);
+    const failedOrgIds = failedBatches.flatMap(b => b.failedOrgIds || []);
+    this._log(`⚠️ ${failedBatches.length} batch(es) failed (${failedOrgIds.length} orgs) but got ${allExecutions.length} executions from others`);
+
+    // Retry failed orgs one at a time with longer timeout
+    if (failedOrgIds.length > 0 && failedOrgIds.length <= 20) {
+      this._log(`🔄 Retrying ${failedOrgIds.length} failed org(s) individually...`);
+      const retryResults = [];
+      for (const orgId of failedOrgIds) {
+        try {
+          const orgResults = await this._fetchExecutionsChunkSingle(
+            daysAgoStart, daysAgoEnd, workflowId, [orgId],
+            { ...options, timeout: 20000 } // Longer timeout for retry
+          );
+          if (orgResults.length > 0) {
+            this._log(`   ✅ Retry for org ${orgId.slice(0,8)}... got ${orgResults.length} executions`);
+            retryResults.push(...orgResults);
+          }
+        } catch (retryError) {
+          this._log(`   ❌ Retry failed for org ${orgId.slice(0,8)}...: ${retryError.message}`);
+        }
+      }
+      if (retryResults.length > 0) {
+        this._log(`🎉 Recovered ${retryResults.length} executions from failed orgs`);
+        allExecutions.push(...retryResults);
+      }
+    } else if (failedOrgIds.length > 20) {
+      this._log(`⚠️ Too many failed orgs (${failedOrgIds.length}) to retry individually`);
+    }
   }
 
   this._log(`Returning ${allExecutions.length} executions (${pendingBatches.size} batches still loading in background)`);
