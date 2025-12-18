@@ -3,8 +3,7 @@
 ## Overview
 This is an example of how to use the App Builder inside of the Rewst platform. This dashboard demonstrates building modular JavaScript components that compile into a single HTML file for deployment.
 
-## ⚠️ Disclaimer
-This project is a **community contribution** and is **not an official Rewst product**. It is not developed, maintained, or supported by Rewst.
+⚠️  Disclaimer: This project is a **community contribution** and is **not an official Rewst product**. It is not developed, maintained, or supported by Rewst.
 
 
 ## Quick Start
