@@ -29,6 +29,24 @@
   <!-- Rewst CSS Theme Overlay -->
   <style>
     {{ CSS_THEME }}
+
+    /* Loading progress pulse animation - loops 15% to 60% */
+    @keyframes progressPulse {
+      0% { width: 15%; }
+      100% { width: 60%; }
+    }
+    .progress-pulse {
+      animation: progressPulse 3s ease-in-out infinite;
+    }
+
+    /* Enriching pulse animation - loops 60% to 100% */
+    @keyframes enrichPulse {
+      0% { width: 60%; }
+      100% { width: 100%; }
+    }
+    .enrich-pulse {
+      animation: enrichPulse 2.5s ease-in-out infinite;
+    }
   </style>
 </head>
 <body class="bg-rewst-light">
@@ -98,6 +116,14 @@
           <div class="dot"></div>
         </div>
         <div class="loading-text">Loading</div>
+
+        <!-- Progress bar and status -->
+        <div id="loading-progress-container" class="w-20" style="margin-top: -10px;">
+          <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+            <div id="loading-progress-bar" class="h-full bg-rewst-teal rounded-full transition-all duration-300" style="width: 0%"></div>
+          </div>
+          <div id="loading-progress-text" class="text-xs text-gray-400 mt-2 text-center">Initializing...</div>
+        </div>
       </div>
     </div>
 
@@ -1926,17 +1952,50 @@ function stopMorphAnimation() {
           const managedOrgs = await rewst.getManagedOrganizations();
           const orgIds = managedOrgs.map(o => o.id);
 
+          // Helper to update loading progress UI
+          const updateLoadingProgress = (percent, text, pulseType = null) => {
+            const bar = document.getElementById('loading-progress-bar');
+            const textEl = document.getElementById('loading-progress-text');
+            if (bar) {
+              bar.style.width = `${percent}%`;
+              // Remove all pulse classes
+              bar.classList.remove('progress-pulse', 'enrich-pulse');
+              // Add specific pulse class if requested
+              if (pulseType === 'fetch') {
+                bar.classList.add('progress-pulse');
+              } else if (pulseType === 'enrich') {
+                bar.classList.add('enrich-pulse');
+              }
+            }
+            if (textEl) textEl.textContent = text;
+          };
+
           // Phase 1: Lightweight queries first (forms, workflows, integrations)
           // These must complete BEFORE heavy execution batches to avoid timeout competition
+          updateLoadingProgress(5, 'Loading workflows...');
           const [workflows, forms, integrationConfigs] = await Promise.all([
             rewst.getAllWorkflows(),
             rewst.getAllForms(),
             rewst.getIntegrationConfigs()
           ]);
           console.log(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
+          updateLoadingProgress(15, 'Fetching executions...', 'fetch'); // Start fetch pulse (15→60%)
 
           // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
-          const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, { timeout: 5000 });
+          const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
+            timeout: 5000,
+            onProgress: ({ phase, completed, total, status }) => {
+              if (phase === 'batches' && total > 0) {
+                // Map batch progress to 15-85% of the bar (stop pulse, batches provide real progress)
+                const batchPercent = 15 + Math.round((completed / total) * 70);
+                updateLoadingProgress(batchPercent, `Fetching: ${completed}/${total} batches...`);
+              } else if (phase === 'enriching') {
+                updateLoadingProgress(60, 'Enriching data...', 'enrich'); // Start enrich pulse (60→100%)
+              } else if (phase === 'complete') {
+                updateLoadingProgress(100, 'Complete!');
+              }
+            }
+          });
           console.log(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
 
           const freshData = { workflows, executions, forms, integrationConfigs };

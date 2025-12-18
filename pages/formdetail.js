@@ -31,11 +31,27 @@ async function renderFormDetailsDashboard() {
     // Skip option generators
     if (e.workflow?.type === 'OPTION_GENERATOR') return false;
 
-    // 1. Primary: check triggerInfo.type
+    // 1. Primary: check triggerInfo.type (most reliable)
     const t = e.triggerInfo?.type || e.triggerInfo?.Type || '';
-    if (String(t).toLowerCase() === 'form submission') return true;
+    const tLower = String(t).toLowerCase();
+    if (tLower === 'form submission') return true;
 
-    // 2. Fallback: check workflow.triggers when triggerInfo times out
+    // 2. Check for form-specific data (formId, submittedInputs, form object)
+    if (e.triggerInfo?.formId || e.triggerInfo?.submittedInputs || e.form?.id) {
+      return true;
+    }
+
+    // 3. Check conductor.input for Cron/Webhook signatures
+    const conductorInput = e.conductor?.input || {};
+    const hasCronSignature = conductorInput.cron && conductorInput.timezone;
+    const hasWebhookSignature = conductorInput.method && conductorInput.headers;
+    if (hasCronSignature || hasWebhookSignature) return false;
+
+    // 4. If triggerInfo.type exists and is NOT "form submission", trust it
+    // This filters out Manual/Test, Cron Job, Webhook, App Platform, etc.
+    if (t && tLower !== '' && tLower !== 'form submission') return false;
+
+    // 5. Fallback: check workflow.triggers ONLY when triggerInfo.type is missing
     if (e.workflow?.triggers) {
       const formTrigger = e.workflow.triggers.find(tr =>
         (tr.triggerType?.name === 'Form Submission' || tr.triggerType?.ref?.includes('form')) &&
@@ -852,14 +868,17 @@ function countBy(arr) {
 
 /**
  * Normalize a raw input key to a valid schema.name for the given form.
- * Returns null if the key doesn't exist in the schema.
+ * - If form is in cache: returns key only if it matches schema (filters internal keys)
+ * - If form NOT in cache (managed org): returns raw key as fallback (allows data through)
  */
 function normalizeFieldKey(formId, rawKey) {
   const allForms = window.dashboardData?.forms || [];
   const form = allForms.find(f => f.id === formId);
-  if (!form) return null;
 
-  // Find field where schema.name matches exactly
+  // Form not in cache (managed org form) - allow raw key through as fallback
+  if (!form) return rawKey;
+
+  // Form in cache - validate against schema to filter internal/system keys
   const match = form.fields?.find(fl => fl.schema?.name === rawKey);
   return match ? rawKey : null;
 }

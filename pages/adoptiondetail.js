@@ -13,12 +13,30 @@ function isFormSubmission(exec) {
   // Skip option generators regardless of trigger type
   if (exec.workflow?.type === 'OPTION_GENERATOR') return false;
 
-  // 1. Try triggerInfo.type (primary source)
+  // 1. Try triggerInfo.type (primary source - most reliable)
   const triggerType = exec.triggerInfo?.type || exec.triggerInfo?.Type || '';
-  if (String(triggerType).toLowerCase() === 'form submission') return true;
+  const tLower = String(triggerType).toLowerCase();
+  if (tLower === 'form submission') return true;
 
-  // 2. Fallback: check if workflow has a Form Submission trigger with a formId
-  // This catches form submissions when triggerInfo times out
+  // 2. Check for form-specific data even if type is missing/different
+  // This catches cases where type timed out but form data exists
+  if (exec.triggerInfo?.formId || exec.triggerInfo?.submittedInputs || exec.form?.id) {
+    return true;
+  }
+
+  // 3. Check for Cron/Webhook signatures in conductor.input
+  // This is reliable because conductor.input is always populated during initial fetch
+  const conductorInput = exec.conductor?.input || {};
+  const hasCronSignature = conductorInput.cron && conductorInput.timezone;
+  const hasWebhookSignature = conductorInput.method && conductorInput.headers;
+  if (hasCronSignature || hasWebhookSignature) return false;
+
+  // 4. If triggerInfo.type exists and is NOT "form submission", trust it
+  // This filters out Manual/Test, Cron Job, Webhook, App Platform, etc.
+  if (triggerType && tLower !== '' && tLower !== 'form submission') return false;
+
+  // 5. Fallback: Check if workflow has a Form Submission trigger with a formId
+  // Used ONLY when triggerInfo.type is completely missing (timeout case)
   if (exec.workflow?.triggers) {
     const formTrigger = exec.workflow.triggers.find(t =>
       (t.triggerType?.name === 'Form Submission' || t.triggerType?.ref?.includes('form')) &&
@@ -181,8 +199,8 @@ function renderAdoptionDashboard() {
     orgStats[orgName].executions++;
     orgStats[orgName].tasksUsed += (exec.tasksUsed || 0);
 
-    // Track unique forms
-    const formId = exec.triggerInfo?.formId;
+    // Track unique forms (use getFormId helper for workflow.triggers fallback)
+    const formId = getFormId(exec);
     if (formId) {
       orgStats[orgName].uniqueForms.add(formId);
     }

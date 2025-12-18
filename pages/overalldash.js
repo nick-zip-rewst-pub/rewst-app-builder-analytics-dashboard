@@ -41,10 +41,23 @@ function renderDashboard() {
         const formSubmissions = filteredExecutions.filter(e => {
             // Skip option generators
             if (e.workflow?.type === 'OPTION_GENERATOR') return false;
-            // Primary: check triggerInfo.type
-            const triggerType = e.triggerInfo?.type || '';
-            if (triggerType === 'Form Submission') return true;
-            // Fallback: check workflow.triggers when triggerInfo times out
+
+            // 1. Primary: check triggerInfo.type
+            const triggerType = e.triggerInfo?.type || e.triggerInfo?.Type || '';
+            const tLower = String(triggerType).toLowerCase();
+            if (tLower === 'form submission') return true;
+
+            // 2. Check for form-specific data
+            if (e.triggerInfo?.formId || e.triggerInfo?.submittedInputs || e.form?.id) return true;
+
+            // 3. Check conductor.input for Cron/Webhook signatures
+            const ci = e.conductor?.input || {};
+            if ((ci.cron && ci.timezone) || (ci.method && ci.headers)) return false;
+
+            // 4. If triggerInfo.type exists and is NOT "form submission", trust it
+            if (triggerType && tLower !== '' && tLower !== 'form submission') return false;
+
+            // 5. Fallback: check workflow.triggers ONLY when triggerInfo.type is missing
             if (e.workflow?.triggers) {
                 const formTrigger = e.workflow.triggers.find(t =>
                     (t.triggerType?.name === 'Form Submission' || t.triggerType?.ref?.includes('form')) &&
@@ -654,10 +667,28 @@ function renderDashboard() {
             const hoursSaved = secondsSaved / 3600;
 
             if (!workflowGroups[wfName]) {
+                // Build workflow link with fallback if missing
+                const wfId = exec.workflow?.id;
+                let wfLink = exec.workflow?.link;
+                let linkFromManagedOrg = false;
+                if (!wfLink && wfId) {
+                    // Check if execution's org differs from selected org (managed org workflow)
+                    const execOrgId = exec.organization?.id;
+                    const fallbackOrgId = execOrgId || window.selectedOrg?.id;
+                    if (fallbackOrgId) {
+                        wfLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${wfId}`;
+                        // Flag if using a different org than selected (might not be accessible)
+                        if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
+                            linkFromManagedOrg = true;
+                        }
+                    }
+                }
+
                 workflowGroups[wfName] = {
                     name: wfName,
-                    workflow_id: exec.workflow?.id || null,
-                    workflow_link: exec.workflow?.link || null,
+                    workflow_id: wfId || null,
+                    workflow_link: wfLink,
+                    link_from_managed_org: linkFromManagedOrg,
                     executions: 0,
                     hours_saved: 0,
                     succeeded: 0,
@@ -700,6 +731,9 @@ function renderDashboard() {
             transforms: {
                 name: (value, row) => {
                     if (row.workflow_link && row.workflow_id) {
+                        const managedOrgIcon = row.link_from_managed_org
+                            ? '<span class="material-icons text-amber-500 cursor-help ml-1" style="font-size:14px;" title="This workflow belongs to a managed organization. You may not have direct access to view it.">info</span>'
+                            : '';
                         return '<span class="action-icons">' +
                             '<a onclick="navigateToWorkflowDetail(\'' + row.workflow_id + '\')" class="icon-action" title="View details">' +
                             '<span class="material-icons" style="font-size:16px;">visibility</span>' +
@@ -708,7 +742,8 @@ function renderDashboard() {
                             '<span class="material-icons" style="font-size:16px;">open_in_new</span>' +
                             '</a>' +
                             '</span>' +
-                            '<a onclick="navigateToWorkflowDetail(\'' + row.workflow_id + '\')" class="clickable-text">' + value + '</a>';
+                            '<a onclick="navigateToWorkflowDetail(\'' + row.workflow_id + '\')" class="clickable-text">' + value + '</a>' +
+                            managedOrgIcon;
                     }
                     return value;
                 },
@@ -748,17 +783,27 @@ function renderDashboard() {
         // Form submissions table
         const formGroups = {};
 
-        // Filter for form submissions with fallback to workflow.triggers when triggerInfo times out
+        // Filter for form submissions
         const filteredFormExecs = filteredExecutions.filter(e => {
             // Skip option generators
             if (e.workflow?.type === 'OPTION_GENERATOR') return false;
 
             // 1. Primary: check triggerInfo.type
-            const triggerType = e.triggerInfo?.type || '';
-            if (triggerType === 'Form Submission') return true;
+            const triggerType = e.triggerInfo?.type || e.triggerInfo?.Type || '';
+            const tLower = String(triggerType).toLowerCase();
+            if (tLower === 'form submission') return true;
 
-            // 2. Fallback: check if workflow has a Form Submission trigger with formId
-            // This catches form submissions when triggerInfo times out
+            // 2. Check for form-specific data
+            if (e.triggerInfo?.formId || e.triggerInfo?.submittedInputs || e.form?.id) return true;
+
+            // 3. Check conductor.input for Cron/Webhook signatures
+            const ci = e.conductor?.input || {};
+            if ((ci.cron && ci.timezone) || (ci.method && ci.headers)) return false;
+
+            // 4. If triggerInfo.type exists and is NOT "form submission", trust it
+            if (triggerType && tLower !== '' && tLower !== 'form submission') return false;
+
+            // 5. Fallback: check workflow.triggers ONLY when triggerInfo.type is missing
             if (e.workflow?.triggers) {
                 const formTrigger = e.workflow.triggers.find(t =>
                     (t.triggerType?.name === 'Form Submission' || t.triggerType?.ref?.includes('form')) &&
@@ -801,17 +846,35 @@ function renderDashboard() {
                 formName = exec.workflow?.name || 'Unknown Form';
             }
 
-            // Get form link with fallback
+            // Get form link with fallback and track if from managed org
             let formLink = exec.triggerInfo?.formLink;
+            let formLinkFromManagedOrg = false;
             if (!formLink && formId) {
-                const orgId = exec.organization?.id || window.selectedOrg?.id;
-                if (orgId) {
-                    formLink = `https://app.rewst.io/organizations/${orgId}/forms/${formId}`;
+                const execOrgId = exec.organization?.id;
+                const fallbackOrgId = execOrgId || window.selectedOrg?.id;
+                if (fallbackOrgId) {
+                    formLink = `https://app.rewst.io/organizations/${fallbackOrgId}/forms/${formId}`;
+                    if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
+                        formLinkFromManagedOrg = true;
+                    }
                 }
             }
 
             const workflowName = exec.workflow?.name || 'Unknown Workflow';
-            const workflowLink = exec.workflow?.link;
+            const workflowId = exec.workflow?.id;
+            // Build workflow link with fallback if missing
+            let workflowLink = exec.workflow?.link;
+            let workflowLinkFromManagedOrg = false;
+            if (!workflowLink && workflowId) {
+                const execOrgId = exec.organization?.id;
+                const fallbackOrgId = execOrgId || window.selectedOrg?.id;
+                if (fallbackOrgId) {
+                    workflowLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${workflowId}`;
+                    if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
+                        workflowLinkFromManagedOrg = true;
+                    }
+                }
+            }
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
             const hoursPerRun = secondsSaved / 3600;
 
@@ -822,8 +885,11 @@ function renderDashboard() {
                     form_name: formName,
                     form_id: formId || null,
                     form_link: formLink,
+                    form_link_from_managed_org: formLinkFromManagedOrg,
                     workflow: workflowName,
                     workflow_link: workflowLink,
+                    workflow_link_from_managed_org: workflowLinkFromManagedOrg,
+                    workflow_id: workflowId || null,
                     submissions: 0,
                     succeeded: 0,
                     failed: 0,
@@ -873,6 +939,9 @@ function renderDashboard() {
                 transforms: {
                     form_name: (value, row) => {
                         if (row.form_link && row.form_id) {
+                            const managedOrgIcon = row.form_link_from_managed_org
+                                ? '<span class="material-icons text-amber-500 cursor-help ml-1" style="font-size:14px;" title="This form belongs to a managed organization. You may not have direct access to view it.">info</span>'
+                                : '';
                             return '<span class="action-icons">' +
                                 '<a onclick="navigateToFormDetail(\'' + row.form_id + '\')" class="text-rewst-fandango hover:text-rewst-light-teal cursor-pointer" style="margin-right: 4px;" title="View details">' +
                                 '<span class="material-icons" style="font-size:16px;">visibility</span>' +
@@ -881,15 +950,19 @@ function renderDashboard() {
                                 '<span class="material-icons" style="font-size:16px;">open_in_new</span>' +
                                 '</a>' +
                                 '</span>' +
-                                '<a onclick="navigateToFormDetail(\'' + row.form_id + '\')" class="clickable-text">' + value + '</a>';
+                                '<a onclick="navigateToFormDetail(\'' + row.form_id + '\')" class="clickable-text">' + value + '</a>' +
+                                managedOrgIcon;
                         }
                         return value;
                     },
                     workflow: (value, row) => {
                         if (row.workflow_link) {
+                            const managedOrgIcon = row.workflow_link_from_managed_org
+                                ? '<span class="material-icons text-amber-500 cursor-help ml-1" style="font-size:14px;" title="This workflow belongs to a managed organization. You may not have direct access to view it.">info</span>'
+                                : '';
                             return '<a href="' + row.workflow_link + '" target="_blank" class="icon-action" title="Open workflow">' +
                                 '<span class="material-icons" style="font-size:16px;">open_in_new</span>' +
-                                '</a>' + value;
+                                '</a>' + value + managedOrgIcon;
                         }
                         return value;
                     },
@@ -939,10 +1012,25 @@ function renderDashboard() {
             const workflowExists = workflowId ? workflows.find(w => w.id === workflowId) : null;
 
             if (!executionGroups[groupKey]) {
+                // Build workflow link with fallback if missing
+                let workflowLink = exec.workflow?.link;
+                let linkFromManagedOrg = false;
+                if (!workflowLink && workflowId) {
+                    const execOrgId = exec.organization?.id;
+                    const fallbackOrgId = execOrgId || window.selectedOrg?.id;
+                    if (fallbackOrgId) {
+                        workflowLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${workflowId}`;
+                        if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
+                            linkFromManagedOrg = true;
+                        }
+                    }
+                }
+
                 executionGroups[groupKey] = {
                     workflow: workflowName,
-                    workflow_id: workflowExists ? workflowId : null,
-                    workflow_link: workflowExists ? (exec.workflow?.link || null) : null,
+                    workflow_id: workflowId || null,
+                    workflow_link: workflowLink,
+                    link_from_managed_org: linkFromManagedOrg,
                     workflow_type: workflowType,
                     type: triggerType,
                     total_runs: 0,
@@ -950,7 +1038,7 @@ function renderDashboard() {
                     failed: 0,
                     total_tasks: 0,
                     total_hours_saved: 0,
-                    workflow_missing: !workflowExists
+                    workflow_missing: !workflowExists && !workflowId
                 };
             }
 
@@ -1000,6 +1088,9 @@ function renderDashboard() {
 
                     // Normal case with icons
                     if (row.workflow_link && row.workflow_id) {
+                        const managedOrgIcon = row.link_from_managed_org
+                            ? '<span class="material-icons text-amber-500 cursor-help ml-1" style="font-size:14px;" title="This workflow belongs to a managed organization. You may not have direct access to view it.">info</span>'
+                            : '';
                         return '<span class="action-icons">' +
                             '<a onclick="navigateToWorkflowDetail(\'' + row.workflow_id + '\')" class="icon-action" title="View details">' +
                             '<span class="material-icons" style="font-size:16px;">visibility</span>' +
@@ -1008,7 +1099,8 @@ function renderDashboard() {
                             '<span class="material-icons" style="font-size:16px;">open_in_new</span>' +
                             '</a>' +
                             '</span>' +
-                            '<a onclick="navigateToWorkflowDetail(\'' + row.workflow_id + '\')" class="clickable-text">' + value + '</a>';
+                            '<a onclick="navigateToWorkflowDetail(\'' + row.workflow_id + '\')" class="clickable-text">' + value + '</a>' +
+                            managedOrgIcon;
                     }
                     return value;
                 },

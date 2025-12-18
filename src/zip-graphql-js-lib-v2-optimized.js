@@ -1292,6 +1292,12 @@ class RewstApp {
     0.25: 55000, // 55 seconds for 0.25-day chunks (6 hours)
     0.1: 55000   // 55 seconds for 0.1-day chunks (~2.4 hours)
   };
+  // RETRY-SPECIFIC: More aggressive limits - stop at 3 days, shorter timeouts
+  static RETRY_CHUNK_SIZES = [6, 3];  // Stop at 3 days - if that fails, give up (faster abandonment)
+  static RETRY_CHUNK_TIMEOUTS = {
+    6: 10000,    // 10 seconds for 6-day chunks
+    3: 20000     // 20 seconds for 3-day chunks (max - then abandon)
+  };
 
   /**
    * Fetch executions for a date range with adaptive chunk sizing.
@@ -1329,25 +1335,81 @@ class RewstApp {
         currentEnd = currentStart;
 
       } catch (error) {
-        // Check if it's a timeout/abort error
+        // Check if it's a timeout/abort error OR our explicit retry signal
         const isTimeout = error.name === 'AbortError' || error.message?.includes('timed out');
+        const isRetrySignal = error.message?.includes('will retry with smaller');
+
+        this._log(`🔍 Chunk error: "${error.message}" (timeout: ${isTimeout}, retrySignal: ${isRetrySignal})`);
 
         if (currentChunkIndex < CHUNK_SIZES.length - 1) {
           // Try smaller chunk size for this same range
           const smallerSize = CHUNK_SIZES[currentChunkIndex + 1];
-          this._log(`⚠️ Chunk failed (${isTimeout ? 'timeout' : error.message}), retrying with ${smallerSize}-day chunks...`);
+          this._log(`⚠️ Chunk failed, retrying days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} with ${smallerSize}-day chunks (was ${currentChunkSize}-day)...`);
           currentChunkIndex++;
           // Don't advance currentEnd - retry the same range with smaller chunks
         } else {
           // At minimum chunk size and still failing - log and skip this range
           const dateStart = new Date(Date.now() - currentEnd * 24 * 60 * 60 * 1000).toLocaleDateString();
           const dateEnd = new Date(Date.now() - currentStart * 24 * 60 * 60 * 1000).toLocaleDateString();
-          this._error(`Failed to fetch ${dateStart} - ${dateEnd} even at minimum chunk size. Skipping this range.`, error);
+          this._error(`Failed to fetch ${dateStart} - ${dateEnd} even at minimum chunk size (0.1 day). Skipping this range.`, error);
           currentEnd = currentStart; // Skip and move on
         }
       }
 
       // Small delay between chunks to be nice to the API
+      if (currentEnd > startDay) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+
+    return allResults;
+  }
+
+  /**
+   * RETRY-SPECIFIC: Fetch with more aggressive limits (1-day min, 25s max timeout)
+   * Used by background retry - gives up faster to avoid long waits
+   * @private
+   */
+  async _fetchChunkAdaptiveRetry(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = []) {
+    const CHUNK_SIZES = RewstApp.RETRY_CHUNK_SIZES;  // [6, 3, 2, 1] - stops at 1 day
+    const CHUNK_TIMEOUTS = RewstApp.RETRY_CHUNK_TIMEOUTS;
+
+    let currentEnd = endDay;
+    let currentChunkIndex = chunkSizeIndex;
+
+    while (currentEnd > startDay) {
+      const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
+      const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
+      const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 25000;
+
+      this._log(`   [RETRY] Fetching days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} (${currentChunkSize}-day chunk, ${timeoutMs/1000}s timeout)...`);
+
+      try {
+        const fetchStart = Date.now();
+        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs });
+        const elapsed = Date.now() - fetchStart;
+
+        if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
+          this._log(`   [RETRY] ⚠️ Chunk took ${elapsed}ms, reducing chunk size`);
+          currentChunkIndex++;
+        }
+
+        allResults.push(...chunkExecutions);
+        this._log(`   [RETRY] ✓ Got ${chunkExecutions.length} in ${elapsed}ms`);
+        currentEnd = currentStart;
+
+      } catch (error) {
+        if (currentChunkIndex < CHUNK_SIZES.length - 1) {
+          const smallerSize = CHUNK_SIZES[currentChunkIndex + 1];
+          this._log(`   [RETRY] ⚠️ Failed, trying ${smallerSize}-day chunks...`);
+          currentChunkIndex++;
+        } else {
+          // At 3-day minimum - give up on this range (don't go smaller)
+          this._log(`   [RETRY] ❌ Failed at 3-day minimum - giving up on days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)}`);
+          throw new Error(`RETRY_ABANDONED: Could not fetch days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} even at 3-day chunks`);
+        }
+      }
+
       if (currentEnd > startDay) {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
@@ -1405,38 +1467,257 @@ class RewstApp {
   /**
    * Retry fetching trigger info for executions that failed during initial load
    * Call this after dashboard renders to fill in missing data in the background
-   * @param {object} options - Options including timeout (default 20s for background retry)
-   * @returns {Promise<Array>} Array of successfully updated executions with their trigger info
+   * Also automatically enriches Form Submission context for forms with ≤100 submissions
+   * @param {object} options - Options including timeout (default 20s for background retry), enrichForms (default true)
+   * @returns {Promise<object>} Object with retried (trigger info) and enriched (form context) arrays
    */
   async retryFailedTriggerInfo(options = {}) {
     const failedIds = this._failedExecutionIds || [];
-    if (failedIds.length === 0) {
-      this._log('No failed executions to retry');
-      return [];
-    }
-
     const timeoutMs = options.timeout || 20000; // Default 20s for background retry
-    this._log(`🔄 Retrying ${failedIds.length} failed execution(s) with ${timeoutMs/1000}s timeout...`);
+    const shouldEnrichForms = options.enrichForms !== false; // Default true
 
     const updated = [];
 
-    for (const executionId of failedIds) {
+    // Phase 1: Retry failed trigger info fetches
+    if (failedIds.length > 0) {
+      this._log(`🔄 Retrying ${failedIds.length} failed execution(s) with ${timeoutMs/1000}s timeout...`);
+
+      for (const executionId of failedIds) {
+        try {
+          const triggerInfo = await this.getExecutionTriggerInfo(executionId, false, { timeout: timeoutMs });
+          if (triggerInfo) {
+            updated.push({ executionId, triggerInfo });
+            this._log(`✅ Retry successful for ${executionId}`);
+          }
+        } catch (error) {
+          this._log(`⚠️ Retry failed for ${executionId}: ${error.message}`);
+        }
+      }
+
+      // Clear the failed list (or keep only the ones that still failed)
+      const successfulIds = updated.map(u => u.executionId);
+      this._failedExecutionIds = failedIds.filter(id => !successfulIds.includes(id));
+
+      this._log(`🔄 Retry complete: ${updated.length}/${failedIds.length} succeeded`);
+    } else {
+      this._log('No failed executions to retry');
+    }
+
+    // Phase 2: Enrich Form Submission context (piggyback on this background call)
+    let enriched = [];
+    if (shouldEnrichForms && typeof window !== 'undefined' && window.dashboardData?.executions) {
+      this._log('📝 Starting Form Submission context enrichment...');
       try {
-        const triggerInfo = await this.getExecutionTriggerInfo(executionId, false, { timeout: timeoutMs });
-        if (triggerInfo) {
-          updated.push({ executionId, triggerInfo });
-          this._log(`✅ Retry successful for ${executionId}`);
+        enriched = await this.enrichFormSubmissionContext(window.dashboardData.executions, {
+          maxPerForm: options.maxPerForm || 100,
+          timeout: options.formTimeout || 15000
+        });
+
+        // Merge enriched data back into dashboardData
+        if (enriched.length > 0) {
+          const enrichedMap = new Map(enriched.map(e => [e.executionId, e]));
+          window.dashboardData.executions = window.dashboardData.executions.map(exec => {
+            const enrichment = enrichedMap.get(exec.id);
+            if (enrichment) {
+              // Merge enriched triggerInfo into existing execution
+              return {
+                ...exec,
+                triggerInfo: {
+                  ...exec.triggerInfo,
+                  ...enrichment.triggerInfo,
+                  submittedInputs: enrichment.submittedInputs
+                },
+                user: enrichment.user || exec.user,
+                _enriched: true
+              };
+            }
+            return exec;
+          });
+          this._log(`📝 Merged ${enriched.length} enriched form submission(s) into dashboardData`);
         }
       } catch (error) {
-        this._log(`⚠️ Retry failed for ${executionId}: ${error.message}`);
+        this._log(`⚠️ Form context enrichment failed: ${error.message}`);
       }
     }
 
-    // Clear the failed list (or keep only the ones that still failed)
-    const successfulIds = updated.map(u => u.executionId);
-    this._failedExecutionIds = failedIds.filter(id => !successfulIds.includes(id));
+    // Phase 3: Retry failed org batches (executions that timed out during initial load)
+    let recoveredExecutions = [];
+    if (options.retryOrgBatches !== false) {
+      try {
+        // Pass through options including onProgress callback
+        // enrichAsYouGo=true means results come back already enriched
+        const retryOptions = {
+          onProgress: options.onProgress,
+          enrichAsYouGo: options.enrichAsYouGo !== false // Default true
+        };
+        const recovered = await this.retryFailedOrgBatches(options.orgBatchTimeout || 30000, retryOptions);
+        if (recovered && recovered.length > 0) {
+          // Results are already enriched if enrichAsYouGo=true (default)
+          recoveredExecutions = recovered;
 
-    this._log(`🔄 Retry complete: ${updated.length}/${failedIds.length} succeeded`);
+          // Merge enriched recovered executions into dashboardData
+          if (typeof window !== 'undefined' && window.dashboardData?.executions) {
+            // Dedupe by execution ID
+            const existingIds = new Set(window.dashboardData.executions.map(e => e.id));
+            const newExecs = recoveredExecutions.filter(e => !existingIds.has(e.id));
+            if (newExecs.length > 0) {
+              window.dashboardData.executions.push(...newExecs);
+              this._log(`📊 Merged ${newExecs.length} enriched recovered executions into dashboardData (${recoveredExecutions.length - newExecs.length} dupes skipped)`);
+            }
+          }
+        }
+      } catch (error) {
+        this._log(`⚠️ Org batch retry failed: ${error.message}`);
+      }
+    }
+
+    // Phase 4: Fetch missing form schemas (managed org forms not in parent's forms list)
+    let fetchedForms = [];
+    if (options.fetchMissingForms !== false && typeof window !== 'undefined' && window.dashboardData) {
+      try {
+        const missingForms = await this.fetchMissingForms(
+          window.dashboardData.executions || [],
+          window.dashboardData.forms || [],
+          { maxForms: options.maxMissingForms || 20, timeout: options.formSchemaTimeout || 10000 }
+        );
+
+        if (missingForms.length > 0) {
+          // Add to forms cache
+          window.dashboardData.forms = window.dashboardData.forms || [];
+          window.dashboardData.forms.push(...missingForms);
+          fetchedForms = missingForms;
+          this._log(`📋 Added ${missingForms.length} managed org form schema(s) to cache`);
+        }
+      } catch (error) {
+        this._log(`⚠️ Missing forms fetch failed: ${error.message}`);
+      }
+    }
+
+    // Return all results
+    return { retried: updated, enriched, recoveredExecutions, fetchedForms, updated }; // 'updated' for backwards compat
+  }
+
+  /**
+   * Background enrich Form Submission executions that are missing context data (submittedInputs, user)
+   * Call this after dashboard renders to fill in missing form submission details
+   * Only enriches forms with ≤100 submissions to avoid excessive API calls
+   * @param {Array} executions - Array of execution objects from dashboard data
+   * @param {object} options - Options including maxPerForm (default 100), timeout (default 15000ms)
+   * @returns {Promise<Array>} Array of enriched executions that were updated
+   */
+  async enrichFormSubmissionContext(executions, options = {}) {
+    if (!executions || executions.length === 0) {
+      this._log('No executions provided for form context enrichment');
+      return [];
+    }
+
+    const maxPerForm = options.maxPerForm || 100;
+    const timeoutMs = options.timeout || 15000;
+
+    // Find Form Submission executions missing submittedInputs
+    // These are executions where we know it's a form submission but couldn't get full context
+    const needsEnrichment = executions.filter(exec => {
+      // Has Form Submission type but missing submittedInputs
+      if (exec.triggerInfo?.type === 'Form Submission' && !exec.triggerInfo?.submittedInputs) {
+        return true;
+      }
+      // Has a form object (we know it's a form) but missing submittedInputs
+      if (exec.form?.id && !exec.triggerInfo?.submittedInputs) {
+        return true;
+      }
+      // Flagged as needing retry and has form reference
+      if (exec._needsRetry && exec.form?.id) {
+        return true;
+      }
+      return false;
+    });
+
+    if (needsEnrichment.length === 0) {
+      this._log('📝 No Form Submissions need context enrichment');
+      return [];
+    }
+
+    this._log(`📝 Found ${needsEnrichment.length} Form Submission(s) potentially needing context enrichment`);
+
+    // Group by formId to check counts
+    const byFormId = new Map();
+    for (const exec of needsEnrichment) {
+      const formId = exec.form?.id || exec.triggerInfo?.formId || 'unknown';
+      if (!byFormId.has(formId)) {
+        byFormId.set(formId, []);
+      }
+      byFormId.get(formId).push(exec);
+    }
+
+    // Filter to only forms with ≤ maxPerForm submissions
+    const toEnrich = [];
+    const skippedForms = [];
+    for (const [formId, formExecs] of byFormId) {
+      if (formExecs.length <= maxPerForm) {
+        toEnrich.push(...formExecs);
+        this._log(`📝 Form ${formId}: ${formExecs.length} submissions - will enrich`);
+      } else {
+        skippedForms.push({ formId, count: formExecs.length });
+        this._log(`📝 Form ${formId}: ${formExecs.length} submissions - skipping (exceeds ${maxPerForm} limit)`);
+      }
+    }
+
+    if (toEnrich.length === 0) {
+      this._log(`📝 All ${byFormId.size} form(s) exceed ${maxPerForm} submission limit - skipping enrichment`);
+      return [];
+    }
+
+    this._log(`📝 Enriching ${toEnrich.length} Form Submission(s) from ${byFormId.size - skippedForms.length} form(s)...`);
+
+    // Fetch context for each execution
+    const updated = [];
+    const batchSize = 10; // Smaller batches to avoid overwhelming API
+    const delayMs = 150;
+
+    for (let i = 0; i < toEnrich.length; i += batchSize) {
+      const batch = toEnrich.slice(i, i + batchSize);
+
+      const batchResults = await Promise.all(
+        batch.map(async (exec) => {
+          try {
+            const triggerInfo = await this.getExecutionTriggerInfo(exec.id, false, { timeout: timeoutMs });
+
+            if (triggerInfo && triggerInfo.submittedInputs) {
+              this._log(`✅ Enriched form context for ${exec.id}`);
+              return {
+                executionId: exec.id,
+                triggerInfo,
+                user: triggerInfo.user || null,
+                formId: triggerInfo.formId,
+                formName: triggerInfo.formName,
+                submittedInputs: triggerInfo.submittedInputs
+              };
+            }
+            return null;
+          } catch (error) {
+            this._log(`⚠️ Failed to enrich ${exec.id}: ${error.message}`);
+            return null;
+          }
+        })
+      );
+
+      updated.push(...batchResults.filter(r => r !== null));
+
+      // Progress log
+      const progress = Math.min(i + batchSize, toEnrich.length);
+      this._log(`📝 Progress: ${progress}/${toEnrich.length} processed`);
+
+      // Small delay between batches
+      if (i + batchSize < toEnrich.length) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+
+    this._log(`📝 Form context enrichment complete: ${updated.length}/${toEnrich.length} enriched`);
+    if (skippedForms.length > 0) {
+      this._log(`📝 Skipped ${skippedForms.length} form(s) with >100 submissions`);
+    }
+
     return updated;
   }
 
@@ -1512,7 +1793,11 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
   const earlyReturnThreshold = Math.ceil(totalBatches * 0.8); // Return when 80% done (only if we have data)
   const maxWaitMs = 30000; // Max 30s before returning with what we have
 
-  this._log(`Fetching ${orgIds.length} orgs in ${totalBatches} batches (return early at ${earlyReturnThreshold}/${totalBatches} with data, or ${maxWaitMs/1000}s max)`);
+  // Use standard timeout for initial parallel batches - faster initial render
+  // Failed orgs will be retried in background with longer timeouts
+  const batchOptions = { ...options, timeout: options.timeout || 10000 };
+
+  this._log(`Fetching ${orgIds.length} orgs in ${totalBatches} batches (return early at ${earlyReturnThreshold}/${totalBatches} with data, or ${maxWaitMs/1000}s max, ${batchOptions.timeout/1000}s per-batch timeout)`);
 
   const batchStartTime = Date.now();
   const completedResults = [];
@@ -1533,7 +1818,7 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
         pendingBatches.set(batchNum, { startTime, orgCount: batchOrgIds.length });
         this._log(`🚀 Batch ${batchNum}/${totalBatches} starting (${batchOrgIds.length} orgs)`);
 
-        return this._fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, batchOrgIds, options)
+        return this._fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, batchOrgIds, batchOptions)
           .then(results => {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             pendingBatches.delete(batchNum);
@@ -1605,48 +1890,50 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
   const failedBatches = completedResults.filter(b => !b.success);
   const allExecutions = completedResults.flatMap(b => b.results);
 
-  // If ANY batch failed AND we got 0 total results, retry with smaller chunks
-  // This catches the case where the batch with all the data times out
-  if (failedBatches.length > 0 && allExecutions.length === 0) {
-    throw new Error(`${failedBatches.length} batch(es) failed with 0 total results - will retry with smaller time chunks`);
+  // Diagnostic logging
+  this._log(`📈 Batch results: ${successfulBatches.length} succeeded, ${failedBatches.length} failed, ${pendingBatches.size} still pending`);
+  if (failedBatches.length > 0) {
+    this._log(`   Failed batch details: ${failedBatches.map(b => `#${b.batchIndex}(${b.failedOrgIds?.length || 0} orgs)`).join(', ')}`);
   }
 
-  // If ALL batches failed, definitely retry
-  if (successfulBatches.length === 0 && completedResults.length > 0) {
-    throw new Error(`All ${completedResults.length} batch(es) failed - will retry with smaller time chunks`);
-  }
-
-  // If some batches failed but we got data, retry failed orgs individually
-  if (failedBatches.length > 0 && allExecutions.length > 0) {
+  // FIRST: Always store failed orgs for background retry (individual 30s each)
+  // ACCUMULATE across time chunks instead of overwriting
+  if (failedBatches.length > 0) {
     const failedOrgIds = failedBatches.flatMap(b => b.failedOrgIds || []);
-    this._log(`⚠️ ${failedBatches.length} batch(es) failed (${failedOrgIds.length} orgs) but got ${allExecutions.length} executions from others`);
+    this._log(`⚠️ ${failedBatches.length} batch(es) failed (${failedOrgIds.length} orgs), got ${allExecutions.length} executions from others`);
 
-    // Retry failed orgs one at a time with longer timeout
-    if (failedOrgIds.length > 0 && failedOrgIds.length <= 20) {
-      this._log(`🔄 Retrying ${failedOrgIds.length} failed org(s) individually...`);
-      const retryResults = [];
-      for (const orgId of failedOrgIds) {
-        try {
-          const orgResults = await this._fetchExecutionsChunkSingle(
-            daysAgoStart, daysAgoEnd, workflowId, [orgId],
-            { ...options, timeout: 20000 } // Longer timeout for retry
-          );
-          if (orgResults.length > 0) {
-            this._log(`   ✅ Retry for org ${orgId.slice(0,8)}... got ${orgResults.length} executions`);
-            retryResults.push(...orgResults);
-          }
-        } catch (retryError) {
-          this._log(`   ❌ Retry failed for org ${orgId.slice(0,8)}...: ${retryError.message}`);
+    if (failedOrgIds.length > 0) {
+      // Initialize accumulator if needed
+      if (!this._failedOrgBatchRetry) {
+        this._failedOrgBatchRetry = {
+          orgIds: [],
+          chunks: [], // Track which time chunks failed for each org
+          workflowId,
+          options
+        };
+      }
+
+      // Add failed orgs with their time chunk info (dedupe by orgId)
+      failedOrgIds.forEach(orgId => {
+        // Add chunk info for this org
+        const chunkInfo = { orgId, daysAgoStart, daysAgoEnd };
+        this._failedOrgBatchRetry.chunks.push(chunkInfo);
+
+        // Add to orgIds if not already there
+        if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+          this._failedOrgBatchRetry.orgIds.push(orgId);
         }
-      }
-      if (retryResults.length > 0) {
-        this._log(`🎉 Recovered ${retryResults.length} executions from failed orgs`);
-        allExecutions.push(...retryResults);
-      }
-    } else if (failedOrgIds.length > 20) {
-      this._log(`⚠️ Too many failed orgs (${failedOrgIds.length}) to retry individually`);
+      });
+
+      this._log(`📋 Accumulated ${this._failedOrgBatchRetry.orgIds.length} unique failed org(s) for background retry`);
     }
+  } else if (successfulBatches.length > 0) {
+    this._log(`✅ All ${successfulBatches.length} completed batch(es) succeeded`);
   }
+
+  // DON'T throw to retry with smaller time chunks - just return what we have
+  // The failed orgs are already queued for individual 30s background retry
+  // This prevents the infinite loop of re-batching the same orgs over and over
 
   this._log(`Returning ${allExecutions.length} executions (${pendingBatches.size} batches still loading in background)`);
 
@@ -1677,6 +1964,194 @@ async getPendingOrgBatchResults() {
     this._pendingOrgBatches = null;
     return null;
   }
+}
+
+/**
+ * Retry failed org batches in the background
+ * Call this after dashboard renders to recover data from orgs that timed out
+ * Now handles ACCUMULATED failures from multiple time chunks
+ * @param {number} timeoutMs - Timeout per org/chunk (default 30s)
+ * @param {object} retryOptions - Additional options
+ * @param {function} retryOptions.onProgress - Callback for progress updates: ({ completed, total, enrichedCount }) => void
+ * @param {boolean} retryOptions.enrichAsYouGo - Enrich each org's results immediately (default: true)
+ * @returns {Promise<Array|null>} Recovered AND enriched executions or null if none
+ */
+async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
+  const { onProgress, enrichAsYouGo = true } = retryOptions;
+
+  if (!this._failedOrgBatchRetry) {
+    this._log('📋 No failed org batches to retry');
+    return null;
+  }
+
+  const { orgIds, chunks, workflowId, options } = this._failedOrgBatchRetry;
+  this._failedOrgBatchRetry = null; // Clear so we don't retry twice
+
+  if (!orgIds || orgIds.length === 0 || !chunks || chunks.length === 0) {
+    return null;
+  }
+
+  // Merge overlapping time ranges per org to get the full date range needed
+  // Then we'll use adaptive chunking (same as main fetch) to handle timeouts smartly
+  const orgDateRanges = new Map();
+  chunks.forEach(chunk => {
+    if (!orgDateRanges.has(chunk.orgId)) {
+      orgDateRanges.set(chunk.orgId, { start: Infinity, end: 0 });
+    }
+    const range = orgDateRanges.get(chunk.orgId);
+    range.start = Math.min(range.start, chunk.daysAgoStart);
+    range.end = Math.max(range.end, chunk.daysAgoEnd);
+  });
+
+  const PARALLEL_LIMIT = 5; // Keep 5 running at all times (sliding window)
+  this._log(`🔄 BACKGROUND RETRY STARTING: ${orgIds.length} org(s) with SLIDING WINDOW (${PARALLEL_LIMIT} concurrent) + RETRY-SPECIFIC chunking (3-day min, 25s max)...`);
+
+  const retryResults = []; // Will hold ENRICHED results if enrichAsYouGo=true
+  const stillFailed = new Set();
+  const abandonedOrgs = new Set(); // Track orgs that we gave up on
+  let completedCount = 0;
+  let enrichedCount = 0; // Track how many executions have been enriched
+
+  // Create retry task for each org - uses _fetchChunkAdaptiveRetry (3-day min, 25s max timeout)
+  // If enrichAsYouGo=true, also enriches the results before returning
+  const retryOrgTask = async (orgId) => {
+    const orgShort = orgId.slice(0, 8);
+    const range = orgDateRanges.get(orgId);
+    const rangeDesc = `days ${range.start.toFixed(1)}-${range.end.toFixed(1)}`;
+
+    try {
+      this._log(`   🔄 Retrying org ${orgShort}... ${rangeDesc}`);
+
+      // Use _fetchChunkAdaptiveRetry - more aggressive limits (3-day min, 25s max)
+      const orgResults = await this._fetchChunkAdaptiveRetry(
+        range.start, range.end, 0, workflowId, [orgId], []
+      );
+
+      completedCount++;
+      const progress = `[${completedCount}/${orgIds.length}]`;
+
+      if (orgResults.length > 0) {
+        // Enrich immediately if enabled (parallel with other orgs still fetching)
+        let finalResults = orgResults;
+        if (enrichAsYouGo) {
+          try {
+            this._log(`   ${progress} 📊 Enriching ${orgResults.length} from ${orgShort}...`);
+            const enrichResult = await this._fetchTriggerInfoBatched(orgResults, false, { timeout: 15000 });
+            finalResults = enrichResult.executions;
+            enrichedCount += finalResults.length;
+          } catch (enrichError) {
+            this._log(`   ${progress} ⚠️ Enrichment failed for ${orgShort}, using raw results`);
+            // Fall back to raw results
+          }
+        }
+        this._log(`   ${progress} ✅ Got ${finalResults.length} from ${orgShort}...`);
+        return { success: true, results: finalResults, orgId, abandoned: false };
+      } else {
+        this._log(`   ${progress} ⚪ ${orgShort}... returned 0`);
+        return { success: true, results: [], orgId, abandoned: false };
+      }
+    } catch (error) {
+      completedCount++;
+      const progress = `[${completedCount}/${orgIds.length}]`;
+      const isAbandoned = error.message?.includes('RETRY_ABANDONED');
+      if (isAbandoned) {
+        this._log(`   ${progress} 🚫 ${orgShort}... ABANDONED (too slow even at 3-day chunks)`);
+      } else {
+        this._log(`   ${progress} ❌ ${orgShort}... FAILED: ${error.message}`);
+      }
+      return { success: false, results: [], orgId, abandoned: isAbandoned };
+    }
+  };
+
+  // SLIDING WINDOW: Keep PARALLEL_LIMIT running at all times
+  // As soon as one finishes, start the next - don't wait for whole batch
+  const queue = [...orgIds];
+  const activePromises = new Map(); // orgId -> promise
+
+  const processResult = (result) => {
+    if (result.results.length > 0) {
+      retryResults.push(...result.results);
+    }
+    if (!result.success) {
+      stillFailed.add(result.orgId);
+    }
+    if (result.abandoned) {
+      abandonedOrgs.add(result.orgId);
+    }
+    activePromises.delete(result.orgId);
+
+    // Call progress callback if provided
+    if (onProgress) {
+      try {
+        onProgress({
+          completed: completedCount,
+          total: orgIds.length,
+          enrichedCount: enrichAsYouGo ? enrichedCount : retryResults.length,
+          abandoned: abandonedOrgs.size
+        });
+      } catch (e) {
+        // Ignore callback errors
+      }
+    }
+  };
+
+  // Start initial batch
+  while (activePromises.size < PARALLEL_LIMIT && queue.length > 0) {
+    const orgId = queue.shift();
+    const promise = retryOrgTask(orgId).then(result => {
+      processResult(result);
+      return result;
+    });
+    activePromises.set(orgId, promise);
+  }
+
+  // Process remaining with sliding window
+  while (activePromises.size > 0) {
+    // Wait for ANY one to complete
+    await Promise.race(activePromises.values());
+
+    // Start new tasks to keep PARALLEL_LIMIT running
+    while (activePromises.size < PARALLEL_LIMIT && queue.length > 0) {
+      const orgId = queue.shift();
+      const promise = retryOrgTask(orgId).then(result => {
+        processResult(result);
+        return result;
+      });
+      activePromises.set(orgId, promise);
+    }
+  }
+
+  const stillFailedArray = Array.from(stillFailed);
+  const abandonedArray = Array.from(abandonedOrgs);
+  const successfulOrgs = orgIds.length - stillFailedArray.length;
+
+  // Log completion with abandoned org info
+  if (retryResults.length > 0) {
+    let msg = `🎉 BACKGROUND RETRY COMPLETE: Recovered ${retryResults.length} executions from ${successfulOrgs}/${orgIds.length} orgs`;
+    if (abandonedArray.length > 0) {
+      msg += ` (${abandonedArray.length} org(s) abandoned - too slow)`;
+    }
+    this._log(msg);
+  } else {
+    let msg = `⚠️ BACKGROUND RETRY COMPLETE: No executions recovered (${stillFailedArray.length}/${orgIds.length} orgs still failing)`;
+    if (abandonedArray.length > 0) {
+      msg += ` (${abandonedArray.length} abandoned)`;
+    }
+    this._log(msg);
+  }
+
+  // Store still-failed orgs in case we want another retry
+  if (stillFailedArray.length > 0) {
+    this._failedOrgIds = stillFailedArray;
+  }
+
+  // Store abandoned orgs separately - these are too slow to retry with normal methods
+  if (abandonedArray.length > 0) {
+    this._abandonedOrgs = abandonedArray;
+    this._log(`📋 Abandoned orgs stored in _abandonedOrgs: ${abandonedArray.map(id => id.slice(0, 8)).join(', ')}`);
+  }
+
+  return retryResults.length > 0 ? retryResults : null;
 }
 
 /**
@@ -2164,6 +2639,92 @@ _buildExecutionLink(executionId, orgId = null) {
       this._log('⚠️ Forms unavailable, continuing without form data');
       return [];
     }
+  }
+
+  /**
+   * Fetch form schemas for forms that have submissions but aren't in the forms cache.
+   * This handles managed org forms - forms created in sub-orgs aren't returned by getAllForms().
+   * Call this after initial load to get pretty field labels for managed org form analytics.
+   * @param {Array} executions - Array of execution objects (from dashboardData.executions)
+   * @param {Array} existingForms - Array of already-loaded forms (from dashboardData.forms)
+   * @param {object} options - Options: maxForms (default 20), timeout (default 10000ms)
+   * @returns {Promise<Array>} Array of newly fetched form objects
+   */
+  async fetchMissingForms(executions, existingForms = [], options = {}) {
+    if (!this.isInitialized) {
+      this._log('⚠️ fetchMissingForms: Not initialized');
+      return [];
+    }
+
+    const maxForms = options.maxForms || 20;
+    const timeoutMs = options.timeout || 10000;
+
+    // Helper to get formId from execution (same logic as dashboard pages)
+    const getFormId = (exec) => {
+      if (exec.triggerInfo?.formId) return exec.triggerInfo.formId;
+      if (exec.form?.id) return exec.form.id;
+      if (exec.workflow?.triggers) {
+        const formTrigger = exec.workflow.triggers.find(t =>
+          t.triggerType?.name === 'Form Submission' || t.triggerType?.ref?.includes('form')
+        );
+        if (formTrigger?.formId) return formTrigger.formId;
+      }
+      return null;
+    };
+
+    // Find unique form IDs from executions
+    const formIdsInExecutions = new Set();
+    executions.forEach(exec => {
+      const formId = getFormId(exec);
+      if (formId) formIdsInExecutions.add(formId);
+    });
+
+    // Find which ones aren't in the existing forms cache
+    const existingFormIds = new Set(existingForms.map(f => f.id));
+    const missingFormIds = [...formIdsInExecutions].filter(id => !existingFormIds.has(id));
+
+    if (missingFormIds.length === 0) {
+      this._log('📋 No missing forms to fetch - all form schemas already cached');
+      return [];
+    }
+
+    this._log(`📋 Found ${missingFormIds.length} form(s) with submissions but not in cache (managed org forms)`);
+
+    // Limit to avoid too many requests
+    const toFetch = missingFormIds.slice(0, maxForms);
+    if (missingFormIds.length > maxForms) {
+      this._log(`   ⚠️ Limiting to ${maxForms} forms (${missingFormIds.length - maxForms} skipped)`);
+    }
+
+    // Fetch each form individually (GraphQL doesn't support id_in for forms)
+    const fetchedForms = [];
+    const PARALLEL_LIMIT = 3;
+
+    for (let i = 0; i < toFetch.length; i += PARALLEL_LIMIT) {
+      const batch = toFetch.slice(i, i + PARALLEL_LIMIT);
+      const promises = batch.map(async (formId) => {
+        try {
+          const form = await Promise.race([
+            this._getForm(formId),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeoutMs))
+          ]);
+          if (form) {
+            this._log(`   ✅ Fetched form: ${form.name || formId.slice(0, 8)}`);
+            return form;
+          }
+        } catch (err) {
+          this._log(`   ❌ Failed to fetch form ${formId.slice(0, 8)}: ${err.message}`);
+        }
+        return null;
+      });
+
+      const results = await Promise.all(promises);
+      fetchedForms.push(...results.filter(Boolean));
+    }
+
+    this._log(`📋 Fetched ${fetchedForms.length}/${toFetch.length} missing form schemas`);
+
+    return fetchedForms;
   }
 
   /**
@@ -2657,7 +3218,8 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
             const form = triggerInfo.formId ? {
               id: triggerInfo.formId,
               name: triggerInfo.formName || null,
-              link: triggerInfo.formLink || null
+              link: triggerInfo.formLink || null,
+              input: triggerInfo.submittedInputs || null // Include submitted inputs for form analytics
             } : null;
 
             // Use organization from context if available, otherwise from execution
@@ -3002,16 +3564,34 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
     const systemKeys = [
       'organization', 'user', 'sentry_trace', 'execution_id',
       'originating_execution_id', 'rewst', 'trigger_instance',
-      'trigger_id', 'state', 'created_at', 'updated_at',
-      'is_manual_activation', 'next_fire_time', 'tag_id'
+      'trigger_execution', 'trigger_id', 'state', 'created_at', 'updated_at',
+      'is_manual_activation', 'next_fire_time', 'tag_id', 'form_id'
     ];
 
+    // Check if inputs are nested in a 'form_data' or similar key
+    let sourceObj = rawContext;
+    if (rawContext.form_data && typeof rawContext.form_data === 'object') {
+      sourceObj = rawContext.form_data;
+      this._log('📝 Found form inputs in form_data key');
+    } else if (rawContext.submitted_inputs && typeof rawContext.submitted_inputs === 'object') {
+      sourceObj = rawContext.submitted_inputs;
+      this._log('📝 Found form inputs in submitted_inputs key');
+    } else if (rawContext.inputs && typeof rawContext.inputs === 'object') {
+      sourceObj = rawContext.inputs;
+      this._log('📝 Found form inputs in inputs key');
+    }
+
     const inputs = {};
-    for (const [key, value] of Object.entries(rawContext)) {
+    for (const [key, value] of Object.entries(sourceObj)) {
       if (!systemKeys.includes(key)) inputs[key] = value;
     }
 
-    return Object.keys(inputs).length ? inputs : null;
+    const inputCount = Object.keys(inputs).length;
+    if (inputCount > 0) {
+      this._log(`📝 Extracted ${inputCount} form input(s): ${Object.keys(inputs).slice(0, 5).join(', ')}${inputCount > 5 ? '...' : ''}`);
+    }
+
+    return inputCount > 0 ? inputs : null;
   }
 
 }
