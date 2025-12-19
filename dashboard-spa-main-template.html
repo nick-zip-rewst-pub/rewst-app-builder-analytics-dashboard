@@ -634,7 +634,8 @@
     
   </div>
   <script type="module">
-    console.log("✅ Dashboard script loading...");
+    // Note: debugLog not available yet, this is initial load message
+    if (window.DEBUG_MODE) console.log("✅ Dashboard script loading...");
 
     // Import RewstApp GraphQL library
     {{ GRAPHQL_LIB }}
@@ -644,20 +645,270 @@
 
           // Dashboard initialization script
     (async function() {
-      console.log("🚀 Initializing Analytics Dashboard");
+      if (window.DEBUG_MODE) console.log("🚀 Initializing Analytics Dashboard");
 
 
       // GLOBAL CONFIGURATION
       const DAYS_TO_FETCH = 30;
-      const CACHE_VERSION = '1.4'; // Increment this to invalidate all caches
+      const CACHE_VERSION = '1.5'; // Increment this to invalidate all caches - bumped for IndexedDB migration
       const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
       const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
-      
-      // set glbal debug flag
+
+      // ============================================
+      // INDEXEDDB CACHE LAYER WITH LOCALSTORAGE FALLBACK
+      // ============================================
+      const IDB_DB_NAME = 'rewst_dashboard_db';
+      const IDB_STORE_NAME = 'cache_store';
+      const IDB_VERSION = 1;
+
+      // set global debug flag
       window.DEBUG_MODE = true; // Set to true when debugging
       if (window.parent) {
         window.parent.DEBUG_MODE = true;
       }
+
+      // Debug logging helpers - only log when DEBUG_MODE is enabled
+      function debugLog(...args) {
+        if (window.DEBUG_MODE) console.log(...args);
+      }
+      function debugWarn(...args) {
+        if (window.DEBUG_MODE) console.warn(...args);
+      }
+      function debugError(...args) {
+        if (window.DEBUG_MODE) console.error(...args);
+      }
+
+      /**
+       * Cache Manager with IndexedDB primary and localStorage fallback
+       */
+      const CacheManager = {
+        db: null,
+        useIndexedDB: true,
+        initialized: false,
+        initPromise: null,
+
+        isIndexedDBAvailable() {
+          try {
+            if (!window.indexedDB) {
+              debugLog('ℹ️ IndexedDB not available in this browser');
+              return false;
+            }
+            return true;
+          } catch (e) {
+            debugLog('ℹ️ IndexedDB check failed:', e.message);
+            return false;
+          }
+        },
+
+        async init() {
+          if (this.initPromise) return this.initPromise;
+          if (this.initialized) return;
+          this.initPromise = this._doInit();
+          return this.initPromise;
+        },
+
+        async _doInit() {
+          if (!this.isIndexedDBAvailable()) {
+            this.useIndexedDB = false;
+            this.initialized = true;
+            debugLog('📦 Cache: Using localStorage fallback (IndexedDB not available)');
+            return;
+          }
+          try {
+            this.db = await this._openIndexedDB();
+            this.useIndexedDB = true;
+            this.initialized = true;
+            debugLog('📦 Cache: Using IndexedDB (large storage available)');
+          } catch (err) {
+            debugWarn('⚠️ IndexedDB failed, falling back to localStorage:', err.message);
+            this.useIndexedDB = false;
+            this.initialized = true;
+          }
+        },
+
+        _openIndexedDB() {
+          return new Promise((resolve, reject) => {
+            const request = indexedDB.open(IDB_DB_NAME, IDB_VERSION);
+            const timeout = setTimeout(() => reject(new Error('IndexedDB open timed out')), 5000);
+
+            request.onerror = () => { clearTimeout(timeout); reject(request.error || new Error('IndexedDB open failed')); };
+            request.onsuccess = () => { clearTimeout(timeout); debugLog('✅ IndexedDB connected:', IDB_DB_NAME); resolve(request.result); };
+            request.onupgradeneeded = (event) => {
+              const db = event.target.result;
+              if (!db.objectStoreNames.contains(IDB_STORE_NAME)) {
+                const store = db.createObjectStore(IDB_STORE_NAME, { keyPath: 'cacheKey' });
+                store.createIndex('timestamp', 'timestamp', { unique: false });
+                debugLog('📦 IndexedDB store created:', IDB_STORE_NAME);
+              }
+            };
+            request.onblocked = () => { clearTimeout(timeout); debugWarn('⚠️ IndexedDB blocked'); reject(new Error('IndexedDB blocked')); };
+          });
+        },
+
+        // IndexedDB methods
+        async _idbSave(cacheKey, cacheObject) {
+          if (!this.db) await this.init();
+          return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(IDB_STORE_NAME, 'readwrite');
+            const store = tx.objectStore(IDB_STORE_NAME);
+            const request = store.put({ cacheKey, ...cacheObject });
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+          });
+        },
+
+        async _idbLoad(cacheKey) {
+          if (!this.db) await this.init();
+          return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(IDB_STORE_NAME, 'readonly');
+            const store = tx.objectStore(IDB_STORE_NAME);
+            const request = store.get(cacheKey);
+            request.onsuccess = () => resolve(request.result || null);
+            request.onerror = () => reject(request.error);
+          });
+        },
+
+        async _idbDelete(cacheKey) {
+          if (!this.db) await this.init();
+          return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(IDB_STORE_NAME, 'readwrite');
+            const store = tx.objectStore(IDB_STORE_NAME);
+            const request = store.delete(cacheKey);
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+          });
+        },
+
+        async _idbGetAllKeys() {
+          if (!this.db) await this.init();
+          return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(IDB_STORE_NAME, 'readonly');
+            const store = tx.objectStore(IDB_STORE_NAME);
+            const request = store.getAllKeys();
+            request.onsuccess = () => resolve(request.result || []);
+            request.onerror = () => reject(request.error);
+          });
+        },
+
+        async _idbClearAll() {
+          if (!this.db) await this.init();
+          return new Promise((resolve, reject) => {
+            const tx = this.db.transaction(IDB_STORE_NAME, 'readwrite');
+            const store = tx.objectStore(IDB_STORE_NAME);
+            const request = store.clear();
+            request.onsuccess = () => resolve();
+            request.onerror = () => reject(request.error);
+          });
+        },
+
+        // localStorage fallback methods
+        _lsSave(cacheKey, cacheObject) {
+          try {
+            localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
+          } catch (e) {
+            if (e.name === 'QuotaExceededError') {
+              debugWarn('⚠️ localStorage quota exceeded, clearing old caches...');
+              this._lsClearByPrefix(CACHE_KEY_PREFIX);
+              localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
+            } else { throw e; }
+          }
+        },
+
+        _lsLoad(cacheKey) {
+          const data = localStorage.getItem(cacheKey);
+          return data ? JSON.parse(data) : null;
+        },
+
+        _lsDelete(cacheKey) { localStorage.removeItem(cacheKey); },
+
+        _lsGetAllKeys() {
+          const keys = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith(CACHE_KEY_PREFIX)) keys.push(key);
+          }
+          return keys;
+        },
+
+        _lsClearByPrefix(prefix) {
+          const keys = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith(prefix)) keys.push(key);
+          }
+          keys.forEach(k => localStorage.removeItem(k));
+          return keys.length;
+        },
+
+        _lsClearAll() { return this._lsClearByPrefix(CACHE_KEY_PREFIX); },
+
+        // Public API
+        async save(cacheKey, cacheObject) {
+          await this.init();
+          try {
+            if (this.useIndexedDB) {
+              await this._idbSave(cacheKey, cacheObject);
+              debugLog(`💾 IndexedDB: Saved cache (key: ${cacheKey})`);
+            } else {
+              this._lsSave(cacheKey, cacheObject);
+              debugLog(`💾 localStorage: Saved cache (key: ${cacheKey})`);
+            }
+          } catch (err) {
+            if (this.useIndexedDB) {
+              debugWarn('⚠️ IndexedDB save failed, trying localStorage:', err.message);
+              try { this._lsSave(cacheKey, cacheObject); debugLog(`💾 localStorage (fallback): Saved cache`); }
+              catch (lsErr) { debugError('❌ Both storage backends failed:', lsErr.message); throw lsErr; }
+            } else { throw err; }
+          }
+        },
+
+        async load(cacheKey) {
+          await this.init();
+          try {
+            if (this.useIndexedDB) return await this._idbLoad(cacheKey);
+            else return this._lsLoad(cacheKey);
+          } catch (err) {
+            if (this.useIndexedDB) { debugWarn('⚠️ IndexedDB load failed, trying localStorage:', err.message); return this._lsLoad(cacheKey); }
+            throw err;
+          }
+        },
+
+        async delete(cacheKey) {
+          await this.init();
+          try {
+            if (this.useIndexedDB) await this._idbDelete(cacheKey);
+            else this._lsDelete(cacheKey);
+            debugLog(`🗑️ Deleted cache (key: ${cacheKey})`);
+          } catch (err) {
+            if (this.useIndexedDB) this._lsDelete(cacheKey);
+            throw err;
+          }
+        },
+
+        async getAllKeys() {
+          await this.init();
+          if (this.useIndexedDB) return await this._idbGetAllKeys();
+          return this._lsGetAllKeys();
+        },
+
+        async clearAll() {
+          await this.init();
+          if (this.useIndexedDB) await this._idbClearAll();
+          else this._lsClearAll();
+          debugLog('🗑️ Cleared ALL caches');
+        },
+
+        getStorageInfo() {
+          return {
+            backend: this.useIndexedDB ? 'IndexedDB' : 'localStorage',
+            initialized: this.initialized,
+            indexedDBAvailable: this.isIndexedDBAvailable()
+          };
+        }
+      };
+
+      // Initialize cache manager on load
+      CacheManager.init().catch(err => debugWarn('⚠️ Cache manager initialization warning:', err));
 
       // Generate cache key based on days parameter (includes org ID for proper cache isolation)
       function getCacheKey(days, orgId = null) {
@@ -667,12 +918,12 @@
 
       // Initialize RewstApp
       const rewst = new RewstApp({ debug: window.DEBUG_MODE });
-      
+
       try {
         await rewst.init();
-        console.log("✅ RewstApp initialized");
+        debugLog("✅ RewstApp initialized");
       } catch (error) {
-        console.error("❌ Failed to initialize RewstApp:", error);
+        debugError("❌ Failed to initialize RewstApp:", error);
         RewstDOM.showError("Failed to initialize dashboard");
         return;
       }
@@ -687,7 +938,7 @@
         window.parent.rewst = rewst;
         window.parent.rewstApp = rewst;
         window.parent.RewstDOM = RewstDOM;
-        console.log("✅ Exposed rewst and RewstDOM to parent console");
+        debugLog("✅ Exposed rewst and RewstDOM to parent console");
       }
 
       // PAGE CONFIGURATION
@@ -721,9 +972,9 @@
 
       let currentPage = 'overall';
 
-      // CACHE MANAGEMENT FUNCTIONS
-      
-      function saveToCache(data, days) {
+      // CACHE MANAGEMENT FUNCTIONS (Using IndexedDB with localStorage fallback)
+
+      async function saveToCache(data, days) {
         try {
           const cacheKey = getCacheKey(days);
           const cacheObject = {
@@ -732,104 +983,89 @@
             days: days,
             data: data
           };
-          localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
-          console.log(`💾 Data cached successfully for ${days} days (key: ${cacheKey})`);
+          await CacheManager.save(cacheKey, cacheObject);
+          debugLog(`💾 Data cached successfully for ${days} days`);
+          const storageInfo = CacheManager.getStorageInfo();
+          debugLog(`📦 Using storage backend: ${storageInfo.backend}`);
         } catch (error) {
-          console.warn('⚠️ Failed to cache data:', error);
-          // localStorage might be full or disabled
+          debugWarn('⚠️ Failed to cache data:', error);
         }
       }
 
-      function loadFromCache(days) {
+      async function loadFromCache(days) {
         try {
           const cacheKey = getCacheKey(days);
-          const cached = localStorage.getItem(cacheKey);
-          if (!cached) {
-            console.log(`📭 No cache found for ${days} days`);
+          const cacheObject = await CacheManager.load(cacheKey);
+          if (!cacheObject) {
+            debugLog(`📭 No cache found for ${days} days`);
             return null;
           }
 
-          const cacheObject = JSON.parse(cached);
-          
           // Check version
           if (cacheObject.version !== CACHE_VERSION) {
-            console.log('🔄 Cache version mismatch, invalidating');
-            clearCache(days);
+            debugLog('🔄 Cache version mismatch, invalidating');
+            await clearCache(days);
             return null;
           }
 
           // Check age
           const age = Date.now() - cacheObject.timestamp;
           if (age > CACHE_DURATION) {
-            console.log(`⏰ Cache expired (${Math.round(age / 1000 / 60 / 60)} hours old)`);
-            clearCache(days);
+            debugLog(`⏰ Cache expired (${Math.round(age / 1000 / 60 / 60)} hours old)`);
+            await clearCache(days);
             return null;
           }
 
-          console.log(`✅ Valid cache found for ${days} days (${Math.round(age / 1000 / 60)} minutes old)`);
+          debugLog(`✅ Valid cache found for ${days} days (${Math.round(age / 1000 / 60)} minutes old)`);
           return cacheObject.data;
         } catch (error) {
-          console.warn('⚠️ Failed to load cache:', error);
-          clearCache(days);
+          debugWarn('⚠️ Failed to load cache:', error);
+          await clearCache(days);
           return null;
         }
       }
 
-      function clearCache(days = null) {
+      async function clearCache(days = null) {
         try {
           if (days !== null) {
             // Clear specific day range
             const cacheKey = getCacheKey(days);
-            localStorage.removeItem(cacheKey);
-            console.log(`🗑️ Cache cleared for ${days} days`);
+            await CacheManager.delete(cacheKey);
+            debugLog(`🗑️ Cache cleared for ${days} days`);
           } else {
             // Clear ALL dashboard caches
-            const keysToRemove = [];
-            for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              if (key && key.startsWith(CACHE_KEY_PREFIX)) {
-                keysToRemove.push(key);
-              }
-            }
-            keysToRemove.forEach(key => localStorage.removeItem(key));
-            console.log(`🗑️ Cleared ${keysToRemove.length} dashboard cache(s)`);
+            await CacheManager.clearAll();
+            debugLog(`🗑️ Cleared all dashboard caches`);
           }
         } catch (error) {
-          console.warn('⚠️ Failed to clear cache:', error);
+          debugWarn('⚠️ Failed to clear cache:', error);
         }
       }
 
-      function getCacheInfo(days) {
+      async function getCacheInfo(days) {
         try {
           const cacheKey = getCacheKey(days);
-          const cached = localStorage.getItem(cacheKey);
-          if (!cached) return null;
-          
-          const cacheObject = JSON.parse(cached);
+          const cacheObject = await CacheManager.load(cacheKey);
+          if (!cacheObject) return null;
+
           const age = Date.now() - cacheObject.timestamp;
-          
+
           return {
             days: cacheObject.days,
             version: cacheObject.version,
             age: age,
             ageMinutes: Math.round(age / 1000 / 60),
             ageHours: Math.round(age / 1000 / 60 / 60),
-            isValid: cacheObject.version === CACHE_VERSION && age < CACHE_DURATION
+            isValid: cacheObject.version === CACHE_VERSION && age < CACHE_DURATION,
+            storageBackend: CacheManager.getStorageInfo().backend
           };
         } catch {
           return null;
         }
       }
 
-      function getAllCacheKeys() {
-        const keys = [];
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (key && key.startsWith(CACHE_KEY_PREFIX)) {
-            keys.push(key);
-          }
-        }
-        return keys;
+      async function getAllCacheKeys() {
+        return await CacheManager.getAllKeys();
       }
 
 
@@ -1004,7 +1240,7 @@ async function initializeAdvancedFilters() {
   const triggerContainer = document.getElementById('trigger-filter-container');
   
   if (!orgContainer || !dateContainer || !triggerContainer) {
-    console.error('Filter containers not found in DOM');
+    debugError('Filter containers not found in DOM');
     return;
   }
 
@@ -1083,7 +1319,7 @@ async function initializeAdvancedFilters() {
     window.filterState.triggerTypes = [];
     
   } catch (error) {
-    console.error('Error initializing filters:', error);
+    debugError('Error initializing filters:', error);
   }
 }
 
@@ -1213,21 +1449,21 @@ async function initializeAdvancedFilters() {
       // Load dashboard data
       async function loadDashboard(forceRefresh = false) {
         try {
-          console.log("📊 Loading dashboard data...");
-          
+          debugLog("📊 Loading dashboard data...");
+
           // Show loading overlay
           showLoadingOverlay();
-          
+
           // Hide exclude test runs toggle during loading
           const excludeTestToggle = document.getElementById('exclude-test-toggle');
           if (excludeTestToggle) {
             excludeTestToggle.style.display = 'none';
           }
-          
+
           // Show button skeletons
           RewstDOM.showButtonSkeleton('#refresh-button-container', 130, 52);
           RewstDOM.showButtonSkeleton('#filter-button-container', 130, 52);
-          
+
           // Show skeletons for current page
           if (currentPage === 'overall') {
             RewstDOM.showMetricSkeleton('#metric-total-hours');
@@ -1245,46 +1481,46 @@ async function initializeAdvancedFilters() {
 
           // Try cache first (unless force refresh)
           if (!forceRefresh) {
-            const cachedData = loadFromCache(DAYS_TO_FETCH);
+            const cachedData = await loadFromCache(DAYS_TO_FETCH);
             if (cachedData) {
-              console.log('⚡ Loading from cache');
+              debugLog('⚡ Loading from cache');
               window.dashboardData = cachedData;
-              
+
               // Restore buttons
               restoreButtons();
               if (excludeTestToggle) excludeTestToggle.style.display = '';
-              
+
               initializeAdvancedFilters()
               pages[currentPage].render();
-              
+
               // Hide loading overlay
               hideLoadingOverlay();
               return;
             }
           } else {
-            clearCache();
-            console.log('🔄 Force refresh - bypassing cache and clearing all caches');
+            await clearCache();
+            debugLog('🔄 Force refresh - bypassing cache and clearing all caches');
           }
 
           // No cache or force refresh - fetch fresh data
           await fetchFreshData(DAYS_TO_FETCH, false);
-          
+
           // Restore buttons and toggle after data loads
           restoreButtons();
           if (excludeTestToggle) excludeTestToggle.style.display = '';
-          
+
           // Hide loading overlay
           hideLoadingOverlay();
 
         } catch (error) {
-          console.error("❌ Failed to load dashboard:", error);
+          debugError("❌ Failed to load dashboard:", error);
           restoreButtons();
           const excludeTestToggle = document.getElementById('exclude-test-toggle');
           if (excludeTestToggle) excludeTestToggle.style.display = '';
-          
+
           // Hide loading overlay on error
           hideLoadingOverlay();
-          
+
           RewstDOM.showError('Failed to load dashboard: ' + error.message);
         }
       }
@@ -1360,11 +1596,11 @@ async function initializeAdvancedFilters() {
         }
 
         if (missingFormNames.length === 0) {
-          console.log('📋 No missing form names to fetch');
+          debugLog('📋 No missing form names to fetch');
           return;
         }
 
-        console.log(`📋 Fetching ${missingFormNames.length} missing form names...`);
+        debugLog(`📋 Fetching ${missingFormNames.length} missing form names...`);
 
         const byOrg = {};
         for (const item of missingFormNames) {
@@ -1406,7 +1642,7 @@ async function initializeAdvancedFilters() {
               }
             } catch (err) {
               errorCount++;
-              console.warn(`Failed to fetch form ${formId}:`, err.message);
+              debugWarn(`Failed to fetch form ${formId}:`, err.message);
             }
           }
         });
@@ -1421,7 +1657,7 @@ async function initializeAdvancedFilters() {
           }
         }
 
-        console.log(`✅ Fetched ${fetchedCount} form names, updated ${updatedCount} executions${errorCount > 0 ? `, ${errorCount} errors` : ''}`);
+        debugLog(`✅ Fetched ${fetchedCount} form names, updated ${updatedCount} executions${errorCount > 0 ? `, ${errorCount} errors` : ''}`);
 
         if (updatedCount > 0 && pages[currentPage]) {
           pages[currentPage].render();
@@ -1446,7 +1682,7 @@ async function initializeAdvancedFilters() {
         
         // Re-attach event listeners
         document.getElementById('refresh-dashboard').addEventListener('click', async () => {
-          console.log('🔄 Manual refresh triggered');
+          debugLog('🔄 Manual refresh triggered');
           await loadDashboard(true);
           RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
         });
@@ -1488,18 +1724,18 @@ let backgroundRotation = null;
 
 function startMorphAnimation() {
   if (typeof anime === 'undefined') {
-    console.warn('Anime.js not loaded, skipping logo animation');
+    debugWarn('Anime.js not loaded, skipping logo animation');
     return;
   }
-  
+
   if (logoTimeline) {
     if (logoTimeline.main) logoTimeline.main.pause();
     if (backgroundRotation) backgroundRotation.pause();
   }
-  
+
   const logo = document.querySelector('#loading-logo');
   if (!logo) {
-    console.warn('Logo element not found');
+    debugWarn('Logo element not found');
     return;
   }
   
@@ -1978,7 +2214,7 @@ function stopMorphAnimation() {
             rewst.getAllForms(),
             rewst.getIntegrationConfigs()
           ]);
-          console.log(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
+          debugLog(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
           updateLoadingProgress(15, 'Fetching executions...', 'fetch'); // Start fetch pulse (15→60%)
 
           // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
@@ -1996,7 +2232,7 @@ function stopMorphAnimation() {
               }
             }
           });
-          console.log(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
+          debugLog(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
 
           const freshData = { workflows, executions, forms, integrationConfigs };
 
@@ -2021,10 +2257,10 @@ function stopMorphAnimation() {
 
           // Background retry for any failed trigger info fetches
           if (rewst._failedExecutionIds?.length > 0) {
-            console.log(`🔄 Retrying ${rewst._failedExecutionIds.length} failed trigger info fetches in background...`);
+            debugLog(`🔄 Retrying ${rewst._failedExecutionIds.length} failed trigger info fetches in background...`);
             rewst.retryFailedTriggerInfo({ timeout: 20000 }).then(updated => {
               if (updated && updated.length > 0) {
-                console.log(`✅ Background retry recovered ${updated.length} executions`);
+                debugLog(`✅ Background retry recovered ${updated.length} executions`);
                 // Merge updated executions into dashboardData
                 const updatedIds = new Set(updated.map(e => e.id));
                 window.dashboardData.executions = window.dashboardData.executions.map(e =>
@@ -2036,18 +2272,18 @@ function stopMorphAnimation() {
                 saveToCache(window.dashboardData, days);
               }
             }).catch(err => {
-              console.warn('⚠️ Background retry failed:', err);
+              debugWarn('⚠️ Background retry failed:', err);
             });
           }
 
           // Background fetch missing form names for managed org forms
-          fetchMissingFormNames().catch(err => console.warn('Form name fetch error:', err));
+          fetchMissingFormNames().catch(err => debugWarn('Form name fetch error:', err));
         }
         } catch (error) {
           if (!isBackgroundRefresh) {
             throw error; // Re-throw if not background
           } else {
-            console.warn('⚠️ Background refresh failed:', error);
+            debugWarn('⚠️ Background refresh failed:', error);
           }
         }
       }
@@ -2102,7 +2338,7 @@ function stopMorphAnimation() {
       //    Event listeners
       //=============================
       document.getElementById('refresh-dashboard').addEventListener('click', async () => {
-        console.log('🔄 Manual refresh triggered');
+        debugLog('🔄 Manual refresh triggered');
         await loadDashboard(true); // Force refresh = true
         RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
       });
@@ -2150,7 +2386,7 @@ function stopMorphAnimation() {
       //=============================
       
       function renderOverallPage() {
-        console.log("📄 Rendering Overall page");
+        debugLog("📄 Rendering Overall page");
         // Scroll to top when page loads
         window.scrollTo({ top: 0, behavior: 'smooth' });
         renderDashboard();
@@ -2158,23 +2394,23 @@ function stopMorphAnimation() {
       }
 
       function renderWorkflowsPage() {
-        console.log("📄 Rendering Workflows page");
+        debugLog("📄 Rendering Workflows page");
         renderWorkflowDetailsDashboard();
       }
 
       function renderFormsPage() {
-        console.log("📄 Rendering Forms page");
+        debugLog("📄 Rendering Forms page");
         renderFormDetailsDashboard();
       }
 
       function renderAdoptionPage() {
-        console.log("📊 Rendering Adoption page");
+        debugLog("📊 Rendering Adoption page");
         window.scrollTo({ top: 0, behavior: 'smooth' });
         renderAdoptionDashboard();
       }
 
-      function renderInsightsPage() {       
-        console.log("📊 Rendering Insights page");        
+      function renderInsightsPage() {
+        debugLog("📊 Rendering Insights page");
         // Scroll to top when page loads
         window.scrollTo({ top: 0, behavior: 'smooth' });
         renderInsightsDashboard();
@@ -2202,17 +2438,17 @@ function stopMorphAnimation() {
 
       // Initialize dashboard
       await loadDashboard();
-      
+
       // Log cache info for debugging
-      const cacheInfo = getCacheInfo(DAYS_TO_FETCH);
+      const cacheInfo = await getCacheInfo(DAYS_TO_FETCH);
       if (cacheInfo) {
-        console.log(`💾 Cache info: ${cacheInfo.ageMinutes} minutes old, ${cacheInfo.days} days, version ${cacheInfo.version}`);
+        debugLog(`💾 Cache info: ${cacheInfo.ageMinutes} minutes old, ${cacheInfo.days} days, version ${cacheInfo.version}`);
       }
-      
+
       // Log all cached day ranges
-      const allCaches = getAllCacheKeys();
+      const allCaches = await getAllCacheKeys();
       if (allCaches.length > 0) {
-        console.log(`📦 Total cached day ranges: ${allCaches.length}`, allCaches);
+        debugLog(`📦 Total cached day ranges: ${allCaches.length}`, allCaches);
       }
 
     })();
