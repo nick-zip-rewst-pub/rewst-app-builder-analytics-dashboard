@@ -1,9 +1,11 @@
 # Rewst Analytics Dashboard
 
+**Author:** Nick Zipse | https://github.com/nick-zip-rewst-pub
+
 ## Overview
 This is an example of how to use the App Builder inside of the Rewst platform. This dashboard demonstrates building modular JavaScript components that compile into a single HTML file for deployment.
 
-#### ⚠️  Disclaimer: 
+#### ⚠️  Disclaimer:
 - This project is a **community contribution** and is **not an official Rewst product**. It is not developed, maintained, or supported by Rewst.
 
 
