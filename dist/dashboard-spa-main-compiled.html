@@ -2147,6 +2147,41 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
  *   console.log(result.output);           // Output variables
  *   console.log(result.triggerInfo.type); // How it was triggered (Cron Job, Webhook, etc.)
  *
+ * Run a Workflow:
+ *   // Basic - run workflow and get result
+ *   const result = await rewst.runWorkflowSmart('workflow-id');
+ *   console.log(result.output);           // Output variables from the workflow
+ *   console.log(result.success);          // true if completed successfully
+ *
+ *   // With input data - pass variables to the workflow
+ *   const result = await rewst.runWorkflowSmart('workflow-id', {
+ *     userName: 'John',
+ *     ticketId: 12345,
+ *     priority: 'high'
+ *   });
+ *   console.log(result.output);           // Access workflow output variables
+ *
+ *   // With progress tracking - monitor execution status
+ *   const result = await rewst.runWorkflowSmart('workflow-id', { input: 'data' }, {
+ *     onProgress: (status, tasksComplete) => {
+ *       console.log(`Status: ${status}, Tasks completed: ${tasksComplete}`);
+ *     }
+ *   });
+ *
+ *   // Access the full result object
+ *   console.log(result.output);           // Output variables
+ *   console.log(result.success);          // Boolean - did it complete successfully?
+ *   console.log(result.executionId);      // The execution ID
+ *   console.log(result.triggerInfo.type); // How it was triggered (Cron Job, Webhook, etc.)
+ *
+ * Get Last Workflow Execution:
+ *   // Get the most recent execution of a specific workflow
+ *   const lastRun = await rewst.getLastWorkflowExecution('workflow-id');
+ *   console.log('Output:', lastRun.output);
+ *   console.log('Status:', lastRun.status);
+ *   console.log('Trigger:', lastRun.triggerInfo.type);
+ *   console.log('Completed:', lastRun.completedAt);
+ *
  * Get Recent Executions:
  *   const executions = await rewst.getRecentExecutions(true, 7);         // Last 7 days with trigger info
  *   const allExecs = await rewst.getRecentExecutions(true);              // All time with trigger info
@@ -2170,11 +2205,6 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
  * Get Org Variables:
  *   const apiKey = await rewst.getOrgVariable('api_key');
  *   console.log('API Key:', apiKey);
- *
- * Get Last Workflow Execution:
- *   const result = await rewst.getLastWorkflowExecution('workflow-id');
- *   console.log('Output:', result.output);
- *   console.log('Trigger:', result.triggerInfo.type);
  *
  * Submit a Form (Simple):
  *   await rewst.submitForm('form-id', { fieldName: 'value' }, 'trigger-id');
