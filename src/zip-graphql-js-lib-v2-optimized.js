@@ -1,12 +1,12 @@
 /**
- * Rewst App Builder Library
- * @fileoverview Simple utilities for creating and manipulating DOM elements
+ * Rewst GraphQL Library
+ * @fileoverview GraphQL API wrapper for Rewst App Builder - execute workflows, fetch executions, submit forms
  * @author Nick Zipse <nick.zipse@rewst.com>
  * @version 4.2.0
- * 
- * A comprehensive JavaScript library for building custom apps in Rewst's App Builder.
- * Provides easy workflow execution, form submission, debugging tools, trigger analysis,
- * and form field conditional logic (show/hide based on other field values).
+ *
+ * A comprehensive JavaScript library for interacting with Rewst's GraphQL API.
+ * Run workflows with inputs and get results, fetch recent executions, submit forms,
+ * analyze triggers, and access organization data from a page within App Builder.
  *
  * Quick Start:
  *   const rewst = new RewstApp({ debug: true });
