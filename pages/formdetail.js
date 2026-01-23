@@ -222,7 +222,7 @@ function renderSelectedForm(selected) {
     if (!formLink && selected.id) {
       const orgId = executions[0]?.organization?.id || window.selectedOrg?.id;
       if (orgId) {
-        formLink = `https://app.rewst.io/organizations/${orgId}/forms/${selected.id}`;
+        formLink = `${rewst._getBaseUrl()}/organizations/${orgId}/forms/${selected.id}`;
       }
     }
     linkEl.href = formLink || '#';
@@ -594,11 +594,11 @@ function renderFormSubmissionsTable(executions) {
     // 2. Build from execution ID and org ID
     const orgId = e.organization?.id || e.triggerInfo?.organization?.id;
     if (e.id && orgId) {
-      return `https://app.rewst.io/organizations/${orgId}/results/${e.id}`;
+      return `${rewst._getBaseUrl()}/organizations/${orgId}/results/${e.id}`;
     }
     // 3. Try using selected org as fallback (execution might be from parent org)
     if (e.id && window.selectedOrg?.id) {
-      return `https://app.rewst.io/organizations/${window.selectedOrg.id}/results/${e.id}`;
+      return `${rewst._getBaseUrl()}/organizations/${window.selectedOrg.id}/results/${e.id}`;
     }
     return null;
   }

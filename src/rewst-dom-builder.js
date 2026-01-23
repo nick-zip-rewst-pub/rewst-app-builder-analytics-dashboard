@@ -3156,6 +3156,7 @@ const RewstDOM = {
     const {
       labelKey = items[0]?.label !== undefined ? 'label' : 'name',
       valueKey = items[0]?.value !== undefined ? 'value' : 'id',
+      subtitleKey = null,
       placeholder = 'Search...',
       onSelect = null,
       searchFn = null,
@@ -3206,6 +3207,15 @@ const RewstDOM = {
     }
     container.appendChild(inputWrapper);
 
+    // Create subtitle display below input (for showing ID when selected)
+    let subtitleDisplay = null;
+    if (subtitleKey) {
+      subtitleDisplay = document.createElement('div');
+      subtitleDisplay.className = 'text-xs text-gray-500 mt-1 px-1';
+      subtitleDisplay.style.display = 'none';
+      container.appendChild(subtitleDisplay);
+    }
+
     // Create dropdown
     const dropdown = document.createElement('div');
     dropdown.className = 'hidden absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
@@ -3241,8 +3251,21 @@ const RewstDOM = {
         const itemEl = document.createElement('button');
         itemEl.type = 'button';
         itemEl.className = 'w-full px-3 py-2 text-left text-sm hover:bg-rewst-light transition-colors cursor-pointer';
-        itemEl.textContent = item[labelKey];
         itemEl.dataset.index = idx;
+
+        // If subtitleKey is set, show label + subtitle
+        if (subtitleKey && item[subtitleKey]) {
+          const labelSpan = document.createElement('div');
+          labelSpan.className = 'font-medium';
+          labelSpan.textContent = item[labelKey];
+          const subtitleSpan = document.createElement('div');
+          subtitleSpan.className = 'text-xs text-gray-500';
+          subtitleSpan.textContent = item[subtitleKey];
+          itemEl.appendChild(labelSpan);
+          itemEl.appendChild(subtitleSpan);
+        } else {
+          itemEl.textContent = item[labelKey];
+        }
 
         itemEl.addEventListener('click', () => {
           selectItem(item);
@@ -3283,6 +3306,16 @@ const RewstDOM = {
       dropdown.classList.add('hidden');
       isDropdownOpen = false;
 
+      // Update subtitle display below input if subtitleKey is set
+      if (subtitleKey && subtitleDisplay) {
+        if (item[subtitleKey]) {
+          subtitleDisplay.textContent = item[subtitleKey];
+          subtitleDisplay.style.display = '';
+        } else {
+          subtitleDisplay.style.display = 'none';
+        }
+      }
+
       // Show clear button, hide dropdown arrow
       if (showClearButton) {
         clearBtn.style.display = '';
@@ -3306,6 +3339,11 @@ const RewstDOM = {
       if (showClearButton) {
         clearBtn.style.display = 'none';
         dropdownBtn.style.display = '';
+      }
+
+      // Hide subtitle display
+      if (subtitleDisplay) {
+        subtitleDisplay.style.display = 'none';
       }
 
       input.focus();
@@ -3554,6 +3592,147 @@ const RewstDOM = {
    */
   showInfo(message, duration = 4000) {
     return this.showToast(message, 'info', duration);
+  },
+
+  /**
+   * Show session expired overlay with animated logo
+   * Creates and displays a full-screen overlay prompting user to log in again
+   * @param {String} loginUrl - URL to redirect to for login (e.g., '/s/login?returnTo=/s/dashboard')
+   */
+  showSessionExpired(loginUrl = '/s/login') {
+    // Remove old style if exists (to pick up any changes)
+    const oldStyle = document.getElementById('rewst-session-expired-styles');
+    if (oldStyle) oldStyle.remove();
+
+    // Inject CSS
+    const style = document.createElement('style');
+    style.id = 'rewst-session-expired-styles';
+    style.textContent = `
+      #rewst-session-expired-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 99999;
+      }
+      #rewst-session-expired-overlay .content {
+        text-align: center;
+        color: #333;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 3rem 2rem;
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 1.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        box-shadow: 0 8px 32px rgba(0, 148, 144, 0.15);
+      }
+      #rewst-session-expired-overlay h2 {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin: 1rem 0 0.5rem 0;
+        color: #333;
+      }
+      #rewst-session-expired-overlay p {
+        margin-bottom: 1.5rem;
+        opacity: 0.8;
+        color: #666;
+      }
+      #rewst-session-expired-overlay a {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: #00bbb4;
+        color: white;
+        padding: 0.75rem 2rem;
+        border-radius: 0.5rem;
+        text-decoration: none;
+        font-weight: 500;
+        transition: background 0.2s;
+      }
+      #rewst-session-expired-overlay a:hover {
+        background: #00928f;
+      }
+      @keyframes fall-over {
+        0% {
+          transform: rotate(0deg);
+          filter: grayscale(0%);
+          opacity: 1;
+        }
+        20% {
+          transform: rotate(5deg);
+          filter: grayscale(0%);
+        }
+        40% {
+          transform: rotate(-8deg);
+          filter: grayscale(15%);
+        }
+        55% {
+          transform: rotate(3deg);
+          filter: grayscale(25%);
+        }
+        85% {
+          transform: rotate(-90deg);
+          filter: grayscale(100%);
+          opacity: 0.5;
+        }
+        100% {
+          transform: rotate(-90deg) translateX(-20px);
+          filter: grayscale(100%);
+          opacity: 0.5;
+        }
+      }
+      @keyframes gentle-rock {
+        0%, 100% {
+          transform: rotate(-90deg) translateX(-20px);
+        }
+        50% {
+          transform: rotate(-85deg) translateX(-20px);
+        }
+      }
+      #session-expired-logo {
+        margin-bottom: 20px;
+        animation: fall-over 2s ease-in-out forwards, gentle-rock 3s ease-in-out 2.2s infinite;
+      }
+    `;
+    document.head.appendChild(style);
+
+    // Remove existing overlay if present
+    const existingOverlay = document.getElementById('rewst-session-expired-overlay');
+    if (existingOverlay) {
+      existingOverlay.remove();
+    }
+
+    // Create overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'rewst-session-expired-overlay';
+    overlay.innerHTML = `
+      <div class="content">
+        <img id="session-expired-logo" src="https://app.rewst.io/logo.svg" alt="Rewst" style="width: 80px; height: 80px;">
+        <h2>Session Expired</h2>
+        <p>Please log in again to continue.</p>
+        <a href="${loginUrl}"><span class="material-icons" style="font-size: 18px;">login</span> Log In</a>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    // Reset logo animation so it plays fresh
+    const logo = document.getElementById('session-expired-logo');
+    if (logo) {
+      logo.style.animation = 'none';
+      logo.offsetHeight; // Force reflow
+      logo.style.animation = '';
+    }
+
+    this._log('Session expired overlay shown');
   },
 
   /**

@@ -1,12 +1,12 @@
 /**
- * Rewst GraphQL Library
- * @fileoverview GraphQL API wrapper for Rewst App Builder - execute workflows, fetch executions, submit forms
+ * Rewst App Builder Library
+ * @fileoverview Simple utilities for creating and manipulating DOM elements
  * @author Nick Zipse <nick.zipse@rewst.com>
  * @version 4.2.0
- *
- * A comprehensive JavaScript library for interacting with Rewst's GraphQL API.
- * Run workflows with inputs and get results, fetch recent executions, submit forms,
- * analyze triggers, and access organization data from a page within App Builder.
+ * 
+ * A comprehensive JavaScript library for building custom apps in Rewst's App Builder.
+ * Provides easy workflow execution, form submission, debugging tools, trigger analysis,
+ * and form field conditional logic (show/hide based on other field values).
  *
  * Quick Start:
  *   const rewst = new RewstApp({ debug: true });
@@ -14,41 +14,6 @@
  *   const result = await rewst.runWorkflowSmart('workflow-id', { input: 'data' });
  *   console.log(result.output);           // Output variables
  *   console.log(result.triggerInfo.type); // How it was triggered (Cron Job, Webhook, etc.)
- *
- * Run a Workflow:
- *   // Basic - run workflow and get result
- *   const result = await rewst.runWorkflowSmart('workflow-id');
- *   console.log(result.output);           // Output variables from the workflow
- *   console.log(result.success);          // true if completed successfully
- *
- *   // With input data - pass variables to the workflow
- *   const result = await rewst.runWorkflowSmart('workflow-id', {
- *     userName: 'John',
- *     ticketId: 12345,
- *     priority: 'high'
- *   });
- *   console.log(result.output);           // Access workflow output variables
- *
- *   // With progress tracking - monitor execution status
- *   const result = await rewst.runWorkflowSmart('workflow-id', { input: 'data' }, {
- *     onProgress: (status, tasksComplete) => {
- *       console.log(`Status: ${status}, Tasks completed: ${tasksComplete}`);
- *     }
- *   });
- *
- *   // Access the full result object
- *   console.log(result.output);           // Output variables
- *   console.log(result.success);          // Boolean - did it complete successfully?
- *   console.log(result.executionId);      // The execution ID
- *   console.log(result.triggerInfo.type); // How it was triggered (Cron Job, Webhook, etc.)
- *
- * Get Last Workflow Execution:
- *   // Get the most recent execution of a specific workflow
- *   const lastRun = await rewst.getLastWorkflowExecution('workflow-id');
- *   console.log('Output:', lastRun.output);
- *   console.log('Status:', lastRun.status);
- *   console.log('Trigger:', lastRun.triggerInfo.type);
- *   console.log('Completed:', lastRun.completedAt);
  *
  * Get Recent Executions:
  *   const executions = await rewst.getRecentExecutions(true, 7);         // Last 7 days with trigger info
@@ -73,6 +38,11 @@
  * Get Org Variables:
  *   const apiKey = await rewst.getOrgVariable('api_key');
  *   console.log('API Key:', apiKey);
+ *
+ * Get Last Workflow Execution:
+ *   const result = await rewst.getLastWorkflowExecution('workflow-id');
+ *   console.log('Output:', result.output);
+ *   console.log('Trigger:', result.triggerInfo.type);
  *
  * Submit a Form (Simple):
  *   await rewst.submitForm('form-id', { fieldName: 'value' }, 'trigger-id');
@@ -996,7 +966,13 @@ class RewstApp {
 
     } catch (error) {
       this._error('Failed to get org variables with org info', error);
-      throw new Error(`Failed to get organization variables: ${error.message}`);
+      // Preserve session expired flag when re-throwing
+      const wrappedError = new Error(`Failed to get organization variables: ${error.message}`);
+      if (error.isSessionExpired) {
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+      }
+      throw wrappedError;
     }
   }
 
@@ -1176,6 +1152,13 @@ class RewstApp {
 
     } catch (error) {
       this._error('Failed to get integration configs', error);
+      // Re-throw session expired errors so UI can show login overlay
+      if (error.isSessionExpired) {
+        const wrappedError = new Error(`Failed to get integration configs: ${error.message}`);
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+        throw wrappedError;
+      }
       return [];
     }
   }
@@ -1257,12 +1240,25 @@ class RewstApp {
       // Combine target org with managed orgs (target org first)
       const allOrgs = targetOrg ? [targetOrg, ...managedOrgs] : managedOrgs;
 
-      this._log(`Retrieved ${allOrgs.length} total organization(s) (1 target + ${managedOrgs.length} managed)`);
-      return allOrgs;
+      // SAFETY: Filter out "Rewst Staff" org - should never be selectable or run against
+      const BLOCKED_ORG_NAMES = ['rewst staff'];
+      const safeOrgs = allOrgs.filter(org => {
+        const orgName = (org.name || '').toLowerCase().trim();
+        return !BLOCKED_ORG_NAMES.includes(orgName);
+      });
+
+      this._log(`Retrieved ${safeOrgs.length} total organization(s) (filtered from ${allOrgs.length}, 1 target + ${managedOrgs.length} managed)`);
+      return safeOrgs;
 
     } catch (error) {
       this._error('Failed to get managed organizations', error);
-      throw new Error(`Failed to get managed organizations: ${error.message}`);
+      // Preserve session expired flag when re-throwing
+      const wrappedError = new Error(`Failed to get managed organizations: ${error.message}`);
+      if (error.isSessionExpired) {
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+      }
+      throw wrappedError;
     }
   }
 
@@ -1312,15 +1308,34 @@ class RewstApp {
   // Max orgs per query - large IN clauses are slow, so batch and run in parallel
   // Reduced to 5 to avoid Rewst server-side query timeouts
   static ORG_BATCH_SIZE = 5;
+  static ORG_SLIDING_THRESHOLD = 10;  // Use sliding window if ≤10 orgs
+  static ORG_WINDOW_SIZE = 3;         // Process 3 orgs at a time (staggered parallel)
+
+  // Workflow scope filter: 'parents' | 'subs' | 'both'
+  static WORKFLOW_SCOPE = 'parents';  // Default: parents only (fast load)
+
+  // Backwards compatibility with INCLUDE_SUB_WORKFLOWS (legacy boolean flag)
+  static get INCLUDE_SUB_WORKFLOWS() {
+    return this.WORKFLOW_SCOPE !== 'parents';
+  }
+  static set INCLUDE_SUB_WORKFLOWS(value) {
+    if (typeof value === 'boolean') {
+      this.WORKFLOW_SCOPE = value ? 'both' : 'parents';
+    } else {
+      this.WORKFLOW_SCOPE = value;
+    }
+  }
+
+  static EXCLUDE_SUB_WORKFLOWS_FOR_ORGS = []; // Array of org IDs to exclude from sub-workflow fetch
   // Progressive TIMEOUTS - parallel org batching allows longer timeouts without blocking
   static CHUNK_TIMEOUTS = {
     6: 10000,    // 10 seconds for 6-day chunks
     3: 10000,    // 10 seconds for 3-day chunks
     2: 10000,    // 10 seconds for 2-day chunks
     1: 10000,    // 10 seconds for 1-day chunks
-    0.5: 55000,  // 55 seconds for 0.5-day chunks (12 hours) - org batches run in parallel
-    0.25: 55000, // 55 seconds for 0.25-day chunks (6 hours)
-    0.1: 55000   // 55 seconds for 0.1-day chunks (~2.4 hours)
+    0.5: 20000,  // 20 seconds for 0.5-day chunks (12 hours)
+    0.25: 20000, // 20 seconds for 0.25-day chunks (6 hours)
+    0.1: 20000   // 20 seconds for 0.1-day chunks (~2.4 hours)
   };
   // RETRY-SPECIFIC: More aggressive limits - stop at 3 days, shorter timeouts
   static RETRY_CHUNK_SIZES = [6, 3];  // Stop at 3 days - if that fails, give up (faster abandonment)
@@ -1334,7 +1349,7 @@ class RewstApp {
    * Starts with larger chunks and automatically splits on timeout.
    * @private
    */
-  async _fetchChunkAdaptive(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = []) {
+  async _fetchChunkAdaptive(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
     const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
     const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
 
@@ -1351,7 +1366,7 @@ class RewstApp {
 
       try {
         const fetchStart = Date.now();
-        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs });
+        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options });
         const elapsed = Date.now() - fetchStart;
 
         if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
@@ -1462,16 +1477,65 @@ class RewstApp {
     try {
       let allExecutions = [];
 
-      if (daysBack && daysBack > 0) {
-        this._log(`Using adaptive chunking (6→3→2→1→0.5→0.25→0.1 days) with progressive timeouts`);
+      // Check if we need two-pass fetch (parents + subs separately)
+      const needsTwoPassFetch = RewstApp.INCLUDE_SUB_WORKFLOWS === true;
 
-        // Start with largest chunk size (index 0 = 6 days)
-        allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds);
+      if (needsTwoPassFetch) {
+        this._log('🔄 Two-pass fetch: Parents (full query) then subs (lightweight query)');
 
-        this._log(`Retrieved ${allExecutions.length} total execution(s) from adaptive chunks`);
+        // PASS 1: Fetch ONLY parents with full query
+        this._log('📊 Pass 1/2: Fetching parent executions (full query)...');
+        const parentsStart = Date.now();
+
+        // Temporarily disable flag to exclude subs from first pass
+        const originalFlag = RewstApp.INCLUDE_SUB_WORKFLOWS;
+        RewstApp.INCLUDE_SUB_WORKFLOWS = false;
+
+        if (daysBack && daysBack > 0) {
+          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds);
+        } else {
+          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs });
+        }
+
+        const parentsElapsed = ((Date.now() - parentsStart) / 1000).toFixed(1);
+        this._log(`✅ Pass 1/2: ${allExecutions.length} parents in ${parentsElapsed}s`);
+
+        // PASS 2: Fetch ONLY subs with lightweight query
+        this._log('📊 Pass 2/2: Fetching sub-workflows (lightweight query)...');
+        const subsStart = Date.now();
+
+        // Restore flag and use lightweight query with explicit scope
+        RewstApp.INCLUDE_SUB_WORKFLOWS = true;
+        let subExecutions = [];
+
+        if (daysBack && daysBack > 0) {
+          subExecutions = await this._fetchChunkAdaptiveLightweight(0, daysBack, 0, workflowId, orgIds, [], { scope: 'subs' });
+        } else {
+          subExecutions = await this._fetchExecutionsChunkLightweight(null, null, workflowId, orgIds, { timeout: timeoutMs, scope: 'subs' });
+        }
+
+        const subsElapsed = ((Date.now() - subsStart) / 1000).toFixed(1);
+        this._log(`✅ Pass 2/2: ${subExecutions.length} subs in ${subsElapsed}s`);
+
+        // Restore original flag
+        RewstApp.INCLUDE_SUB_WORKFLOWS = originalFlag;
+
+        // Merge results
+        allExecutions = [...allExecutions, ...subExecutions];
+        const totalElapsed = ((Date.now() - parentsStart) / 1000).toFixed(1);
+        this._log(`📊 Combined: ${allExecutions.length} total (${allExecutions.length - subExecutions.length} parents + ${subExecutions.length} subs) in ${totalElapsed}s`);
+
       } else {
-        this._log('Fetching all executions (no date filter - may be slow for large datasets)');
-        allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs });
+        // Original single-pass logic (when INCLUDE_SUB_WORKFLOWS = false)
+        // Pass through options.scope if provided (used by loadSubWorkflows button)
+        if (daysBack && daysBack > 0) {
+          this._log(`Using adaptive chunking (6→3→2→1→0.5→0.25→0.1 days) with progressive timeouts`);
+          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds, [], options);
+          this._log(`Retrieved ${allExecutions.length} total execution(s) from adaptive chunks`);
+        } else {
+          this._log('Fetching all executions (no date filter - may be slow for large datasets)');
+          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs, ...options });
+        }
       }
 
       // Now enrich with trigger info if requested
@@ -1490,7 +1554,13 @@ class RewstApp {
   
     } catch (error) {
       this._error('Failed to get recent executions', error);
-      throw new Error(`Failed to get recent executions: ${error.message}`);
+      // Preserve session expired flag when re-throwing
+      const wrappedError = new Error(`Failed to get recent executions: ${error.message}`);
+      if (error.isSessionExpired) {
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+      }
+      throw wrappedError;
     }
   }
 
@@ -1997,6 +2067,287 @@ async getPendingOrgBatchResults() {
 }
 
 /**
+ * Fetch executions using sliding window (staggered parallel processing)
+ * For small org counts (≤10) where sub-workflow data causes timeouts in batches
+ */
+async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
+  const { onProgress } = options;
+  const windowSize = RewstApp.ORG_WINDOW_SIZE || 3;
+
+  this._log(`🪟 Sliding window: ${orgIds.length} orgs, ${windowSize} at a time`);
+
+  const allExecutions = [];
+  const failedOrgIds = [];
+  let completedCount = 0;
+
+  // Queue management (same pattern as retryFailedOrgBatches)
+  const queue = [...orgIds];
+  const activePromises = new Map();
+
+  const processOrg = async (orgId, orgIndex) => {
+    const startTime = Date.now();
+    this._log(`🔍 [${orgIndex + 1}/${orgIds.length}] Org ${orgId.slice(0, 8)}`);
+
+    try {
+      const orgExecs = await this._fetchChunkAdaptive(
+        daysAgoStart, daysAgoEnd, 0, workflowId, [orgId], [],
+        { timeout: 45000, ...options }  // 45s per org, pass through scope
+      );
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._log(`✅ [${orgIndex + 1}/${orgIds.length}] ${orgExecs.length} execs in ${elapsed}s`);
+
+      return { success: true, results: orgExecs, orgId };
+    } catch (error) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._error(`❌ [${orgIndex + 1}/${orgIds.length}] FAILED after ${elapsed}s`, error);
+      return { success: false, results: [], orgId };
+    }
+  };
+
+  const processResult = (result) => {
+    if (result.results.length > 0) {
+      allExecutions.push(...result.results);
+    }
+    if (!result.success) {
+      failedOrgIds.push(result.orgId);
+    }
+    completedCount++;
+
+    // Report progress
+    if (onProgress) {
+      onProgress({
+        phase: 'sliding_window',
+        completed: completedCount,
+        total: orgIds.length,
+        executions: allExecutions.length,
+        status: `Loaded ${completedCount}/${orgIds.length} orgs`
+      });
+    }
+  };
+
+  let orgIndex = 0;
+
+  // Start initial window
+  while (activePromises.size < windowSize && queue.length > 0) {
+    const orgId = queue.shift();
+    const promise = processOrg(orgId, orgIndex++).then(result => {
+      processResult(result);
+      activePromises.delete(orgId);
+      return result;
+    });
+    activePromises.set(orgId, promise);
+  }
+
+  // Process remaining with sliding window
+  while (activePromises.size > 0) {
+    await Promise.race(activePromises.values());
+
+    while (activePromises.size < windowSize && queue.length > 0) {
+      const orgId = queue.shift();
+      const promise = processOrg(orgId, orgIndex++).then(result => {
+        processResult(result);
+        activePromises.delete(orgId);
+        return result;
+      });
+      activePromises.set(orgId, promise);
+    }
+  }
+
+  // Store failed orgs for potential retry
+  if (failedOrgIds.length > 0) {
+    if (!this._failedOrgBatchRetry) {
+      this._failedOrgBatchRetry = {
+        orgIds: [],
+        chunks: [],
+        workflowId,
+        options
+      };
+    }
+
+    failedOrgIds.forEach(orgId => {
+      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart, daysAgoEnd });
+      if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+        this._failedOrgBatchRetry.orgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 ${failedOrgIds.length} org(s) failed, saved for retry`);
+  }
+
+  this._log(`📊 Sliding window complete: ${allExecutions.length} executions`);
+  return allExecutions;
+}
+
+/**
+ * Fetch executions using sliding window with LIGHTWEIGHT query
+ * Same as _fetchExecutionsMultiOrgSliding but uses lightweight adaptive fetch
+ * @private
+ */
+async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
+  const { onProgress } = options;
+  const windowSize = RewstApp.ORG_WINDOW_SIZE || 3;
+
+  this._log(`🪟 Sliding window (lightweight): ${orgIds.length} orgs, ${windowSize} at a time`);
+
+  const allExecutions = [];
+  const failedOrgIds = [];
+  let completedCount = 0;
+
+  // Queue management (same pattern as retryFailedOrgBatches)
+  const queue = [...orgIds];
+  const activePromises = new Map();
+
+  const processOrg = async (orgId, orgIndex) => {
+    const startTime = Date.now();
+    this._log(`🔍 [Lightweight ${orgIndex + 1}/${orgIds.length}] Org ${orgId.slice(0, 8)}`);
+
+    try {
+      const orgExecs = await this._fetchChunkAdaptiveLightweight(
+        daysAgoStart, daysAgoEnd, 0, workflowId, [orgId], [],
+        { timeout: 45000, ...options }  // 45s per org, pass through scope
+      );
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._log(`✅ [Lightweight ${orgIndex + 1}/${orgIds.length}] ${orgExecs.length} execs in ${elapsed}s`);
+
+      return { success: true, results: orgExecs, orgId };
+    } catch (error) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._error(`❌ [Lightweight ${orgIndex + 1}/${orgIds.length}] FAILED after ${elapsed}s`, error);
+      return { success: false, results: [], orgId };
+    }
+  };
+
+  const processResult = (result) => {
+    if (result.results.length > 0) {
+      allExecutions.push(...result.results);
+    }
+    if (!result.success) {
+      failedOrgIds.push(result.orgId);
+    }
+    completedCount++;
+
+    // Report progress
+    if (onProgress) {
+      onProgress({
+        phase: 'sliding_window_lightweight',
+        completed: completedCount,
+        total: orgIds.length,
+        executions: allExecutions.length,
+        status: `Loaded ${completedCount}/${orgIds.length} orgs (lightweight)`
+      });
+    }
+  };
+
+  let orgIndex = 0;
+
+  // Start initial window
+  while (activePromises.size < windowSize && queue.length > 0) {
+    const orgId = queue.shift();
+    const promise = processOrg(orgId, orgIndex++).then(result => {
+      processResult(result);
+      activePromises.delete(orgId);
+      return result;
+    });
+    activePromises.set(orgId, promise);
+  }
+
+  // Process remaining with sliding window
+  while (activePromises.size > 0) {
+    await Promise.race(activePromises.values());
+
+    while (activePromises.size < windowSize && queue.length > 0) {
+      const orgId = queue.shift();
+      const promise = processOrg(orgId, orgIndex++).then(result => {
+        processResult(result);
+        activePromises.delete(orgId);
+        return result;
+      });
+      activePromises.set(orgId, promise);
+    }
+  }
+
+  // Store failed orgs for potential retry
+  if (failedOrgIds.length > 0) {
+    if (!this._failedOrgBatchRetry) {
+      this._failedOrgBatchRetry = {
+        orgIds: [],
+        chunks: [],
+        workflowId,
+        options
+      };
+    }
+
+    failedOrgIds.forEach(orgId => {
+      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart, daysAgoEnd });
+      if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+        this._failedOrgBatchRetry.orgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 ${failedOrgIds.length} org(s) failed (lightweight), saved for retry`);
+  }
+
+  this._log(`📊 Sliding window (lightweight) complete: ${allExecutions.length} executions`);
+  return allExecutions;
+}
+
+/**
+ * Fetch executions for many orgs by batching with LIGHTWEIGHT query
+ * Simplified version that uses lightweight single query for each batch
+ * @private
+ */
+async _fetchExecutionsMultiOrgLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
+  const batchSize = RewstApp.ORG_BATCH_SIZE;
+  const batches = [];
+
+  // Split orgIds into batches
+  for (let i = 0; i < orgIds.length; i += batchSize) {
+    batches.push(orgIds.slice(i, i + batchSize));
+  }
+
+  const totalBatches = batches.length;
+  const batchOptions = { ...options, timeout: options.timeout || 10000 };
+
+  this._log(`Fetching (lightweight) ${orgIds.length} orgs in ${totalBatches} batches`);
+
+  const allExecutions = [];
+
+  // Process batches in parallel
+  const batchPromises = batches.map((batchOrgIds, index) => {
+    const batchNum = index + 1;
+
+    return new Promise(resolve => setTimeout(resolve, index * 30))
+      .then(() => {
+        const startTime = Date.now();
+        this._log(`🚀 Batch ${batchNum}/${totalBatches} starting (lightweight, ${batchOrgIds.length} orgs)`);
+
+        return this._fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, batchOrgIds, batchOptions)
+          .then(results => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            this._log(`✅ Batch ${batchNum} (lightweight) done in ${elapsed}s: ${results.length} execs`);
+            return results;
+          })
+          .catch(error => {
+            this._error(`❌ Batch ${batchNum} (lightweight) FAILED`, error);
+            return [];
+          });
+      });
+  });
+
+  const results = await Promise.all(batchPromises);
+  results.forEach(batchResults => {
+    if (batchResults.length > 0) {
+      allExecutions.push(...batchResults);
+    }
+  });
+
+  this._log(`Returning ${allExecutions.length} executions (lightweight batching)`);
+  return allExecutions;
+}
+
+/**
  * Retry failed org batches in the background
  * Call this after dashboard renders to recover data from orgs that timed out
  * Now handles ACCUMULATED failures from multiple time chunks
@@ -2194,6 +2545,11 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
  * @returns {Promise<Array>} Array of executions for this chunk
  */
 async _fetchExecutionsChunk(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
+  // Use sliding window for small org counts (≤10) to avoid batch timeouts with sub-workflows
+  if (orgIds && orgIds.length > 1 && orgIds.length <= RewstApp.ORG_SLIDING_THRESHOLD) {
+    return await this._fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
   // If too many orgs, batch into parallel queries
   if (orgIds && orgIds.length > RewstApp.ORG_BATCH_SIZE) {
     return await this._fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
@@ -2223,6 +2579,7 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
         updatedAt
         numSuccessfulTasks
         parentExecutionId
+        originatingExecutionId
         organization {
           id
           name
@@ -2252,11 +2609,15 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
   `;
 
   // Match original variable structure exactly
+  // Use options.scope if provided, otherwise fall back to static RewstApp.WORKFLOW_SCOPE
+  const scope = options.scope || RewstApp.WORKFLOW_SCOPE;
   const variables = {
     where: {},
     order: [["createdAt", "desc"]],
     search: {
-      originatingExecutionId: { _eq: null }
+      // Filter based on scope: 'parents' | 'subs' | 'both'
+      ...(scope === 'parents' ? { originatingExecutionId: { _eq: null } } :
+          scope === 'subs' ? { originatingExecutionId: { _ne: null } } : {})
     },
     limit: 10000
   };
@@ -2286,6 +2647,170 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
 
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
   return result.workflowExecutions || [];
+}
+
+/**
+ * Internal: Fetch executions with LIGHTWEIGHT query (for sub-workflows)
+ * Excludes conductor.input and workflow.triggers to reduce data transfer by 80-90%
+ * @private
+ */
+async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
+  // LIGHTWEIGHT QUERY: Excludes conductor.input and workflow.triggers
+  // Used for sub-workflow fetches to avoid massive data transfer (25-250GB of conductor.input + 2.5M-5M trigger objects)
+  const query = `
+    query getWorkflowExecutions($where: WorkflowExecutionWhereInput!, $order: [[String!]!], $search: WorkflowExecutionSearchInput, $limit: Int) {
+      workflowExecutions(
+        where: $where
+        order: $order
+        search: $search
+        limit: $limit
+      ) {
+        id
+        status
+        createdAt
+        updatedAt
+        numSuccessfulTasks
+        parentExecutionId
+        originatingExecutionId
+        organization {
+          id
+          name
+          managingOrgId
+        }
+        workflow {
+          id
+          name
+          humanSecondsSaved
+        }
+      }
+    }
+  `;
+
+  // Match original variable structure exactly
+  // Use options.scope if provided, otherwise fall back to static RewstApp.WORKFLOW_SCOPE
+  const scope = options.scope || RewstApp.WORKFLOW_SCOPE;
+  const variables = {
+    where: {},
+    order: [["createdAt", "desc"]],
+    search: {
+      // Filter based on scope: 'parents' | 'subs' | 'both'
+      ...(scope === 'parents' ? { originatingExecutionId: { _eq: null } } :
+          scope === 'subs' ? { originatingExecutionId: { _ne: null } } : {})
+    },
+    limit: 10000
+  };
+
+  // Add org filter to search (not where) - matches original
+  if (orgIds && orgIds.length > 0) {
+    variables.search.orgId = { _in: orgIds };
+  } else {
+    variables.search.orgId = { _eq: this.orgId };
+  }
+
+  // Add date filters if specified - matches original
+  if (daysAgoStart !== null && daysAgoEnd !== null) {
+    const endDate = new Date(Date.now() - daysAgoStart * 24 * 60 * 60 * 1000).toISOString();
+    const startDate = new Date(Date.now() - daysAgoEnd * 24 * 60 * 60 * 1000).toISOString();
+
+    variables.search.createdAt = {
+      _gt: startDate,
+      _lt: endDate
+    };
+  }
+
+  // Add workflow filter if specified - matches original
+  if (workflowId) {
+    variables.where.workflowId = workflowId;
+  }
+
+  const result = await this._graphql('getWorkflowExecutions', query, variables, options);
+  return result.workflowExecutions || [];
+}
+
+/**
+ * Internal: Fetch executions with LIGHTWEIGHT query (routing method)
+ * Routes to appropriate fetch method (sliding window, batching, or single query)
+ * @private
+ */
+async _fetchExecutionsChunkLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
+  // Use sliding window for small org counts (≤10)
+  if (orgIds && orgIds.length > 1 && orgIds.length <= RewstApp.ORG_SLIDING_THRESHOLD) {
+    return await this._fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
+  // If too many orgs, batch into parallel queries
+  if (orgIds && orgIds.length > RewstApp.ORG_BATCH_SIZE) {
+    return await this._fetchExecutionsMultiOrgLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
+  // Otherwise, run single lightweight query
+  return await this._fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+}
+
+/**
+ * Fetch executions with adaptive chunking using LIGHTWEIGHT query
+ * Same logic as _fetchChunkAdaptive() but uses lightweight query
+ * @private
+ */
+async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
+  const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
+  const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+
+  // Process from endDay backwards to startDay
+  let currentEnd = endDay;
+  let currentChunkIndex = chunkSizeIndex;
+
+  while (currentEnd > startDay) {
+    const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
+    const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
+    const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 10000;
+
+    this._log(`[Lightweight] Fetching days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} (${currentChunkSize}-day chunk, ${timeoutMs/1000}s timeout)...`);
+
+    try {
+      const fetchStart = Date.now();
+      const chunkExecutions = await this._fetchExecutionsChunkLightweight(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options });
+      const elapsed = Date.now() - fetchStart;
+
+      if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
+        // Took too long but succeeded - split for remaining chunks
+        this._log(`⚠️ Lightweight chunk took ${elapsed}ms (>${timeoutMs}ms), reducing chunk size for remaining days`);
+        currentChunkIndex++;
+      }
+
+      allResults.push(...chunkExecutions);
+      this._log(`✓ Got ${chunkExecutions.length} executions (lightweight) in ${elapsed}ms`);
+      currentEnd = currentStart;
+
+    } catch (error) {
+      // Check if it's a timeout/abort error OR our explicit retry signal
+      const isTimeout = error.name === 'AbortError' || error.message?.includes('timed out');
+      const isRetrySignal = error.message?.includes('will retry with smaller');
+
+      this._log(`🔍 Lightweight chunk error: "${error.message}" (timeout: ${isTimeout}, retrySignal: ${isRetrySignal})`);
+
+      if (currentChunkIndex < CHUNK_SIZES.length - 1) {
+        // Try smaller chunk size for this same range
+        const smallerSize = CHUNK_SIZES[currentChunkIndex + 1];
+        this._log(`⚠️ Lightweight chunk failed, retrying days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} with ${smallerSize}-day chunks (was ${currentChunkSize}-day)...`);
+        currentChunkIndex++;
+        // Don't advance currentEnd - retry the same range with smaller chunks
+      } else {
+        // At minimum chunk size and still failing - log and skip this range
+        const dateStart = new Date(Date.now() - currentEnd * 24 * 60 * 60 * 1000).toLocaleDateString();
+        const dateEnd = new Date(Date.now() - currentStart * 24 * 60 * 60 * 1000).toLocaleDateString();
+        this._error(`Failed to fetch ${dateStart} - ${dateEnd} even at minimum chunk size (0.1 day) with lightweight query. Skipping this range.`, error);
+        currentEnd = currentStart; // Skip and move on
+      }
+    }
+
+    // Small delay between chunks to be nice to the API
+    if (currentEnd > startDay) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  return allResults;
 }
 
   /**
@@ -3082,9 +3607,9 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
     const conductorInput = execution.conductor?.input || {};
     const inferred = this._inferTriggerTypeFromInput(conductorInput);
     
-    // Build links
-    const workflowLink = this._buildWorkflowLink(execution.workflow?.id);
-    const executionLink = this._buildExecutionLink(execution.id);
+    // Build links - use execution's org, not logged-in user's org
+    const workflowLink = this._buildWorkflowLink(execution.workflow?.id, execution.organization?.id);
+    const executionLink = this._buildExecutionLink(execution.id, execution.organization?.id);
     
     // Get organization from execution (already fetched!)
     const organization = execution.organization ? {
@@ -3421,7 +3946,33 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
       const result = await response.json();
 
       if (result.errors) {
-        throw new Error(`GraphQL error: ${JSON.stringify(result.errors)}`);
+        const errorStr = JSON.stringify(result.errors);
+
+        // Check for auth errors - reload page to trigger platform's login redirect
+        // Only match the specific AUTH_ERR code from Rewst API to avoid false positives
+        const isAuthError = errorStr.includes('"code":"AUTH_ERR"');
+
+        if (isAuthError) {
+          this._log('🔒 Session expired');
+          // Don't auto-reload - causes infinite loops in iframes
+          // Throw a clear error that the UI can catch and display with login link
+          const sessionError = new Error('SESSION_EXPIRED');
+          sessionError.isSessionExpired = true;
+          // Build login URL with returnTo param for current page
+          // Try to get current path from parent window, fall back to just /s/login
+          let currentPath = '/s/';
+          try {
+            if (window.parent && window.parent !== window) {
+              currentPath = window.parent.location.pathname;
+            }
+          } catch (e) {
+            // Cross-origin, can't access parent path
+          }
+          sessionError.loginUrl = `/s/login?returnTo=${encodeURIComponent(currentPath)}`;
+          throw sessionError;
+        }
+
+        throw new Error(`GraphQL error: ${errorStr}`);
       }
 
       return result.data;

@@ -1522,6 +1522,101 @@ tbody tr:nth-child(9) { animation-delay: 240ms; }
 tbody tr:nth-child(10) { animation-delay: 270ms; }
 /* Add more if you want more rows to stagger */
 
+/* ============================================
+   SESSION EXPIRED OVERLAY
+   ============================================ */
+
+.session-expired-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.session-expired-overlay.hidden {
+  display: none;
+}
+
+.session-expired-content {
+  text-align: center;
+  color: white;
+}
+
+.session-expired-content h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem 0;
+}
+
+.session-expired-content p {
+  margin-bottom: 1.5rem;
+  opacity: 0.9;
+}
+
+.session-expired-content a {
+  display: inline-block;
+  background: #00bbb4;
+  color: white;
+  padding: 0.75rem 2rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.session-expired-content a:hover {
+  background: #00928f;
+}
+
+/* Session expired logo fall animation */
+@keyframes session-fall-over {
+  0% {
+    transform: rotate(0deg);
+    filter: grayscale(0%);
+    opacity: 1;
+  }
+  20% {
+    transform: rotate(5deg);
+    filter: grayscale(0%);
+  }
+  40% {
+    transform: rotate(-8deg);
+    filter: grayscale(15%);
+  }
+  55% {
+    transform: rotate(3deg);
+    filter: grayscale(25%);
+  }
+  85% {
+    transform: rotate(-90deg);
+    filter: grayscale(100%);
+    opacity: 0.5;
+  }
+  100% {
+    transform: rotate(-90deg) translateX(-20px);
+    filter: grayscale(100%);
+    opacity: 0.5;
+  }
+}
+
+@keyframes session-gentle-rock {
+  0%, 100% {
+    transform: rotate(-90deg) translateX(-20px);
+  }
+  50% {
+    transform: rotate(-85deg) translateX(-20px);
+  }
+}
+
+.session-expired-logo {
+  animation: session-fall-over 2s ease-in-out forwards, session-gentle-rock 3s ease-in-out 2.2s infinite;
+}
+
     /* Loading progress pulse animation - loops 15% to 60% */
     @keyframes progressPulse {
       0% { width: 15%; }
@@ -1529,6 +1624,15 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
     }
     .progress-pulse {
       animation: progressPulse 0.8s ease-in-out infinite;
+    }
+
+    /* Slower pulse for sub-workflow loading - same as main but slower */
+    @keyframes progressPulseSlow {
+      0% { width: 15%; }
+      100% { width: 60%; }
+    }
+    .progress-pulse-slow {
+      animation: progressPulseSlow 1.8s ease-out infinite;
     }
 
     /* Enriching pulse animation - slowly moves to 100% without looping */
@@ -1620,6 +1724,7 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
     </div>
 
 
+
   <!-- Sidebar -->
   <div id="sidebar" class="sidebar fixed left-0 top-0 h-screen bg-white border-r border-gray-200 flex flex-col z-50">
     
@@ -1667,9 +1772,17 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
           </a>
         </div>
       </div>
-      
+
     </nav>
-    
+
+    <!-- Load Sub-Workflows Button (Bottom of Sidebar) -->
+    <div id="load-sub-workflows-container" class="p-4 border-t border-gray-200 hidden">
+      <button id="load-sub-workflows-btn" class="flex items-center justify-center gap-2 w-full px-4 py-2 bg-rewst-teal hover:bg-rewst-teal-dark text-white rounded-md transition-colors duration-200 text-sm font-medium whitespace-nowrap">
+        <span class="material-icons text-lg">add_circle_outline</span>
+        <span class="nav-text">Load Sub-Workflows</span>
+      </button>
+    </div>
+
   </div>
       
       <!-- Advanced Filter Slide-Out -->
@@ -2131,14 +2244,14 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
 
     // Import RewstApp GraphQL library
     /**
- * Rewst GraphQL Library
- * @fileoverview GraphQL API wrapper for Rewst App Builder - execute workflows, fetch executions, submit forms
+ * Rewst App Builder Library
+ * @fileoverview Simple utilities for creating and manipulating DOM elements
  * @author Nick Zipse <nick.zipse@rewst.com>
  * @version 4.2.0
- *
- * A comprehensive JavaScript library for interacting with Rewst's GraphQL API.
- * Run workflows with inputs and get results, fetch recent executions, submit forms,
- * analyze triggers, and access organization data from a page within App Builder.
+ * 
+ * A comprehensive JavaScript library for building custom apps in Rewst's App Builder.
+ * Provides easy workflow execution, form submission, debugging tools, trigger analysis,
+ * and form field conditional logic (show/hide based on other field values).
  *
  * Quick Start:
  *   const rewst = new RewstApp({ debug: true });
@@ -2146,41 +2259,6 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
  *   const result = await rewst.runWorkflowSmart('workflow-id', { input: 'data' });
  *   console.log(result.output);           // Output variables
  *   console.log(result.triggerInfo.type); // How it was triggered (Cron Job, Webhook, etc.)
- *
- * Run a Workflow:
- *   // Basic - run workflow and get result
- *   const result = await rewst.runWorkflowSmart('workflow-id');
- *   console.log(result.output);           // Output variables from the workflow
- *   console.log(result.success);          // true if completed successfully
- *
- *   // With input data - pass variables to the workflow
- *   const result = await rewst.runWorkflowSmart('workflow-id', {
- *     userName: 'John',
- *     ticketId: 12345,
- *     priority: 'high'
- *   });
- *   console.log(result.output);           // Access workflow output variables
- *
- *   // With progress tracking - monitor execution status
- *   const result = await rewst.runWorkflowSmart('workflow-id', { input: 'data' }, {
- *     onProgress: (status, tasksComplete) => {
- *       console.log(`Status: ${status}, Tasks completed: ${tasksComplete}`);
- *     }
- *   });
- *
- *   // Access the full result object
- *   console.log(result.output);           // Output variables
- *   console.log(result.success);          // Boolean - did it complete successfully?
- *   console.log(result.executionId);      // The execution ID
- *   console.log(result.triggerInfo.type); // How it was triggered (Cron Job, Webhook, etc.)
- *
- * Get Last Workflow Execution:
- *   // Get the most recent execution of a specific workflow
- *   const lastRun = await rewst.getLastWorkflowExecution('workflow-id');
- *   console.log('Output:', lastRun.output);
- *   console.log('Status:', lastRun.status);
- *   console.log('Trigger:', lastRun.triggerInfo.type);
- *   console.log('Completed:', lastRun.completedAt);
  *
  * Get Recent Executions:
  *   const executions = await rewst.getRecentExecutions(true, 7);         // Last 7 days with trigger info
@@ -2205,6 +2283,11 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
  * Get Org Variables:
  *   const apiKey = await rewst.getOrgVariable('api_key');
  *   console.log('API Key:', apiKey);
+ *
+ * Get Last Workflow Execution:
+ *   const result = await rewst.getLastWorkflowExecution('workflow-id');
+ *   console.log('Output:', result.output);
+ *   console.log('Trigger:', result.triggerInfo.type);
  *
  * Submit a Form (Simple):
  *   await rewst.submitForm('form-id', { fieldName: 'value' }, 'trigger-id');
@@ -3128,7 +3211,13 @@ class RewstApp {
 
     } catch (error) {
       this._error('Failed to get org variables with org info', error);
-      throw new Error(`Failed to get organization variables: ${error.message}`);
+      // Preserve session expired flag when re-throwing
+      const wrappedError = new Error(`Failed to get organization variables: ${error.message}`);
+      if (error.isSessionExpired) {
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+      }
+      throw wrappedError;
     }
   }
 
@@ -3308,6 +3397,13 @@ class RewstApp {
 
     } catch (error) {
       this._error('Failed to get integration configs', error);
+      // Re-throw session expired errors so UI can show login overlay
+      if (error.isSessionExpired) {
+        const wrappedError = new Error(`Failed to get integration configs: ${error.message}`);
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+        throw wrappedError;
+      }
       return [];
     }
   }
@@ -3389,12 +3485,25 @@ class RewstApp {
       // Combine target org with managed orgs (target org first)
       const allOrgs = targetOrg ? [targetOrg, ...managedOrgs] : managedOrgs;
 
-      this._log(`Retrieved ${allOrgs.length} total organization(s) (1 target + ${managedOrgs.length} managed)`);
-      return allOrgs;
+      // SAFETY: Filter out "Rewst Staff" org - should never be selectable or run against
+      const BLOCKED_ORG_NAMES = ['rewst staff'];
+      const safeOrgs = allOrgs.filter(org => {
+        const orgName = (org.name || '').toLowerCase().trim();
+        return !BLOCKED_ORG_NAMES.includes(orgName);
+      });
+
+      this._log(`Retrieved ${safeOrgs.length} total organization(s) (filtered from ${allOrgs.length}, 1 target + ${managedOrgs.length} managed)`);
+      return safeOrgs;
 
     } catch (error) {
       this._error('Failed to get managed organizations', error);
-      throw new Error(`Failed to get managed organizations: ${error.message}`);
+      // Preserve session expired flag when re-throwing
+      const wrappedError = new Error(`Failed to get managed organizations: ${error.message}`);
+      if (error.isSessionExpired) {
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+      }
+      throw wrappedError;
     }
   }
 
@@ -3444,15 +3553,34 @@ class RewstApp {
   // Max orgs per query - large IN clauses are slow, so batch and run in parallel
   // Reduced to 5 to avoid Rewst server-side query timeouts
   static ORG_BATCH_SIZE = 5;
+  static ORG_SLIDING_THRESHOLD = 10;  // Use sliding window if ≤10 orgs
+  static ORG_WINDOW_SIZE = 3;         // Process 3 orgs at a time (staggered parallel)
+
+  // Workflow scope filter: 'parents' | 'subs' | 'both'
+  static WORKFLOW_SCOPE = 'parents';  // Default: parents only (fast load)
+
+  // Backwards compatibility with INCLUDE_SUB_WORKFLOWS (legacy boolean flag)
+  static get INCLUDE_SUB_WORKFLOWS() {
+    return this.WORKFLOW_SCOPE !== 'parents';
+  }
+  static set INCLUDE_SUB_WORKFLOWS(value) {
+    if (typeof value === 'boolean') {
+      this.WORKFLOW_SCOPE = value ? 'both' : 'parents';
+    } else {
+      this.WORKFLOW_SCOPE = value;
+    }
+  }
+
+  static EXCLUDE_SUB_WORKFLOWS_FOR_ORGS = []; // Array of org IDs to exclude from sub-workflow fetch
   // Progressive TIMEOUTS - parallel org batching allows longer timeouts without blocking
   static CHUNK_TIMEOUTS = {
     6: 10000,    // 10 seconds for 6-day chunks
     3: 10000,    // 10 seconds for 3-day chunks
     2: 10000,    // 10 seconds for 2-day chunks
     1: 10000,    // 10 seconds for 1-day chunks
-    0.5: 55000,  // 55 seconds for 0.5-day chunks (12 hours) - org batches run in parallel
-    0.25: 55000, // 55 seconds for 0.25-day chunks (6 hours)
-    0.1: 55000   // 55 seconds for 0.1-day chunks (~2.4 hours)
+    0.5: 20000,  // 20 seconds for 0.5-day chunks (12 hours)
+    0.25: 20000, // 20 seconds for 0.25-day chunks (6 hours)
+    0.1: 20000   // 20 seconds for 0.1-day chunks (~2.4 hours)
   };
   // RETRY-SPECIFIC: More aggressive limits - stop at 3 days, shorter timeouts
   static RETRY_CHUNK_SIZES = [6, 3];  // Stop at 3 days - if that fails, give up (faster abandonment)
@@ -3466,7 +3594,7 @@ class RewstApp {
    * Starts with larger chunks and automatically splits on timeout.
    * @private
    */
-  async _fetchChunkAdaptive(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = []) {
+  async _fetchChunkAdaptive(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
     const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
     const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
 
@@ -3483,7 +3611,7 @@ class RewstApp {
 
       try {
         const fetchStart = Date.now();
-        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs });
+        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options });
         const elapsed = Date.now() - fetchStart;
 
         if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
@@ -3594,16 +3722,65 @@ class RewstApp {
     try {
       let allExecutions = [];
 
-      if (daysBack && daysBack > 0) {
-        this._log(`Using adaptive chunking (6→3→2→1→0.5→0.25→0.1 days) with progressive timeouts`);
+      // Check if we need two-pass fetch (parents + subs separately)
+      const needsTwoPassFetch = RewstApp.INCLUDE_SUB_WORKFLOWS === true;
 
-        // Start with largest chunk size (index 0 = 6 days)
-        allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds);
+      if (needsTwoPassFetch) {
+        this._log('🔄 Two-pass fetch: Parents (full query) then subs (lightweight query)');
 
-        this._log(`Retrieved ${allExecutions.length} total execution(s) from adaptive chunks`);
+        // PASS 1: Fetch ONLY parents with full query
+        this._log('📊 Pass 1/2: Fetching parent executions (full query)...');
+        const parentsStart = Date.now();
+
+        // Temporarily disable flag to exclude subs from first pass
+        const originalFlag = RewstApp.INCLUDE_SUB_WORKFLOWS;
+        RewstApp.INCLUDE_SUB_WORKFLOWS = false;
+
+        if (daysBack && daysBack > 0) {
+          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds);
+        } else {
+          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs });
+        }
+
+        const parentsElapsed = ((Date.now() - parentsStart) / 1000).toFixed(1);
+        this._log(`✅ Pass 1/2: ${allExecutions.length} parents in ${parentsElapsed}s`);
+
+        // PASS 2: Fetch ONLY subs with lightweight query
+        this._log('📊 Pass 2/2: Fetching sub-workflows (lightweight query)...');
+        const subsStart = Date.now();
+
+        // Restore flag and use lightweight query with explicit scope
+        RewstApp.INCLUDE_SUB_WORKFLOWS = true;
+        let subExecutions = [];
+
+        if (daysBack && daysBack > 0) {
+          subExecutions = await this._fetchChunkAdaptiveLightweight(0, daysBack, 0, workflowId, orgIds, [], { scope: 'subs' });
+        } else {
+          subExecutions = await this._fetchExecutionsChunkLightweight(null, null, workflowId, orgIds, { timeout: timeoutMs, scope: 'subs' });
+        }
+
+        const subsElapsed = ((Date.now() - subsStart) / 1000).toFixed(1);
+        this._log(`✅ Pass 2/2: ${subExecutions.length} subs in ${subsElapsed}s`);
+
+        // Restore original flag
+        RewstApp.INCLUDE_SUB_WORKFLOWS = originalFlag;
+
+        // Merge results
+        allExecutions = [...allExecutions, ...subExecutions];
+        const totalElapsed = ((Date.now() - parentsStart) / 1000).toFixed(1);
+        this._log(`📊 Combined: ${allExecutions.length} total (${allExecutions.length - subExecutions.length} parents + ${subExecutions.length} subs) in ${totalElapsed}s`);
+
       } else {
-        this._log('Fetching all executions (no date filter - may be slow for large datasets)');
-        allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs });
+        // Original single-pass logic (when INCLUDE_SUB_WORKFLOWS = false)
+        // Pass through options.scope if provided (used by loadSubWorkflows button)
+        if (daysBack && daysBack > 0) {
+          this._log(`Using adaptive chunking (6→3→2→1→0.5→0.25→0.1 days) with progressive timeouts`);
+          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds, [], options);
+          this._log(`Retrieved ${allExecutions.length} total execution(s) from adaptive chunks`);
+        } else {
+          this._log('Fetching all executions (no date filter - may be slow for large datasets)');
+          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs, ...options });
+        }
       }
 
       // Now enrich with trigger info if requested
@@ -3622,7 +3799,13 @@ class RewstApp {
   
     } catch (error) {
       this._error('Failed to get recent executions', error);
-      throw new Error(`Failed to get recent executions: ${error.message}`);
+      // Preserve session expired flag when re-throwing
+      const wrappedError = new Error(`Failed to get recent executions: ${error.message}`);
+      if (error.isSessionExpired) {
+        wrappedError.isSessionExpired = true;
+        wrappedError.loginUrl = error.loginUrl;
+      }
+      throw wrappedError;
     }
   }
 
@@ -4129,6 +4312,287 @@ async getPendingOrgBatchResults() {
 }
 
 /**
+ * Fetch executions using sliding window (staggered parallel processing)
+ * For small org counts (≤10) where sub-workflow data causes timeouts in batches
+ */
+async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
+  const { onProgress } = options;
+  const windowSize = RewstApp.ORG_WINDOW_SIZE || 3;
+
+  this._log(`🪟 Sliding window: ${orgIds.length} orgs, ${windowSize} at a time`);
+
+  const allExecutions = [];
+  const failedOrgIds = [];
+  let completedCount = 0;
+
+  // Queue management (same pattern as retryFailedOrgBatches)
+  const queue = [...orgIds];
+  const activePromises = new Map();
+
+  const processOrg = async (orgId, orgIndex) => {
+    const startTime = Date.now();
+    this._log(`🔍 [${orgIndex + 1}/${orgIds.length}] Org ${orgId.slice(0, 8)}`);
+
+    try {
+      const orgExecs = await this._fetchChunkAdaptive(
+        daysAgoStart, daysAgoEnd, 0, workflowId, [orgId], [],
+        { timeout: 45000, ...options }  // 45s per org, pass through scope
+      );
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._log(`✅ [${orgIndex + 1}/${orgIds.length}] ${orgExecs.length} execs in ${elapsed}s`);
+
+      return { success: true, results: orgExecs, orgId };
+    } catch (error) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._error(`❌ [${orgIndex + 1}/${orgIds.length}] FAILED after ${elapsed}s`, error);
+      return { success: false, results: [], orgId };
+    }
+  };
+
+  const processResult = (result) => {
+    if (result.results.length > 0) {
+      allExecutions.push(...result.results);
+    }
+    if (!result.success) {
+      failedOrgIds.push(result.orgId);
+    }
+    completedCount++;
+
+    // Report progress
+    if (onProgress) {
+      onProgress({
+        phase: 'sliding_window',
+        completed: completedCount,
+        total: orgIds.length,
+        executions: allExecutions.length,
+        status: `Loaded ${completedCount}/${orgIds.length} orgs`
+      });
+    }
+  };
+
+  let orgIndex = 0;
+
+  // Start initial window
+  while (activePromises.size < windowSize && queue.length > 0) {
+    const orgId = queue.shift();
+    const promise = processOrg(orgId, orgIndex++).then(result => {
+      processResult(result);
+      activePromises.delete(orgId);
+      return result;
+    });
+    activePromises.set(orgId, promise);
+  }
+
+  // Process remaining with sliding window
+  while (activePromises.size > 0) {
+    await Promise.race(activePromises.values());
+
+    while (activePromises.size < windowSize && queue.length > 0) {
+      const orgId = queue.shift();
+      const promise = processOrg(orgId, orgIndex++).then(result => {
+        processResult(result);
+        activePromises.delete(orgId);
+        return result;
+      });
+      activePromises.set(orgId, promise);
+    }
+  }
+
+  // Store failed orgs for potential retry
+  if (failedOrgIds.length > 0) {
+    if (!this._failedOrgBatchRetry) {
+      this._failedOrgBatchRetry = {
+        orgIds: [],
+        chunks: [],
+        workflowId,
+        options
+      };
+    }
+
+    failedOrgIds.forEach(orgId => {
+      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart, daysAgoEnd });
+      if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+        this._failedOrgBatchRetry.orgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 ${failedOrgIds.length} org(s) failed, saved for retry`);
+  }
+
+  this._log(`📊 Sliding window complete: ${allExecutions.length} executions`);
+  return allExecutions;
+}
+
+/**
+ * Fetch executions using sliding window with LIGHTWEIGHT query
+ * Same as _fetchExecutionsMultiOrgSliding but uses lightweight adaptive fetch
+ * @private
+ */
+async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
+  const { onProgress } = options;
+  const windowSize = RewstApp.ORG_WINDOW_SIZE || 3;
+
+  this._log(`🪟 Sliding window (lightweight): ${orgIds.length} orgs, ${windowSize} at a time`);
+
+  const allExecutions = [];
+  const failedOrgIds = [];
+  let completedCount = 0;
+
+  // Queue management (same pattern as retryFailedOrgBatches)
+  const queue = [...orgIds];
+  const activePromises = new Map();
+
+  const processOrg = async (orgId, orgIndex) => {
+    const startTime = Date.now();
+    this._log(`🔍 [Lightweight ${orgIndex + 1}/${orgIds.length}] Org ${orgId.slice(0, 8)}`);
+
+    try {
+      const orgExecs = await this._fetchChunkAdaptiveLightweight(
+        daysAgoStart, daysAgoEnd, 0, workflowId, [orgId], [],
+        { timeout: 45000, ...options }  // 45s per org, pass through scope
+      );
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._log(`✅ [Lightweight ${orgIndex + 1}/${orgIds.length}] ${orgExecs.length} execs in ${elapsed}s`);
+
+      return { success: true, results: orgExecs, orgId };
+    } catch (error) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      this._error(`❌ [Lightweight ${orgIndex + 1}/${orgIds.length}] FAILED after ${elapsed}s`, error);
+      return { success: false, results: [], orgId };
+    }
+  };
+
+  const processResult = (result) => {
+    if (result.results.length > 0) {
+      allExecutions.push(...result.results);
+    }
+    if (!result.success) {
+      failedOrgIds.push(result.orgId);
+    }
+    completedCount++;
+
+    // Report progress
+    if (onProgress) {
+      onProgress({
+        phase: 'sliding_window_lightweight',
+        completed: completedCount,
+        total: orgIds.length,
+        executions: allExecutions.length,
+        status: `Loaded ${completedCount}/${orgIds.length} orgs (lightweight)`
+      });
+    }
+  };
+
+  let orgIndex = 0;
+
+  // Start initial window
+  while (activePromises.size < windowSize && queue.length > 0) {
+    const orgId = queue.shift();
+    const promise = processOrg(orgId, orgIndex++).then(result => {
+      processResult(result);
+      activePromises.delete(orgId);
+      return result;
+    });
+    activePromises.set(orgId, promise);
+  }
+
+  // Process remaining with sliding window
+  while (activePromises.size > 0) {
+    await Promise.race(activePromises.values());
+
+    while (activePromises.size < windowSize && queue.length > 0) {
+      const orgId = queue.shift();
+      const promise = processOrg(orgId, orgIndex++).then(result => {
+        processResult(result);
+        activePromises.delete(orgId);
+        return result;
+      });
+      activePromises.set(orgId, promise);
+    }
+  }
+
+  // Store failed orgs for potential retry
+  if (failedOrgIds.length > 0) {
+    if (!this._failedOrgBatchRetry) {
+      this._failedOrgBatchRetry = {
+        orgIds: [],
+        chunks: [],
+        workflowId,
+        options
+      };
+    }
+
+    failedOrgIds.forEach(orgId => {
+      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart, daysAgoEnd });
+      if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+        this._failedOrgBatchRetry.orgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 ${failedOrgIds.length} org(s) failed (lightweight), saved for retry`);
+  }
+
+  this._log(`📊 Sliding window (lightweight) complete: ${allExecutions.length} executions`);
+  return allExecutions;
+}
+
+/**
+ * Fetch executions for many orgs by batching with LIGHTWEIGHT query
+ * Simplified version that uses lightweight single query for each batch
+ * @private
+ */
+async _fetchExecutionsMultiOrgLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
+  const batchSize = RewstApp.ORG_BATCH_SIZE;
+  const batches = [];
+
+  // Split orgIds into batches
+  for (let i = 0; i < orgIds.length; i += batchSize) {
+    batches.push(orgIds.slice(i, i + batchSize));
+  }
+
+  const totalBatches = batches.length;
+  const batchOptions = { ...options, timeout: options.timeout || 10000 };
+
+  this._log(`Fetching (lightweight) ${orgIds.length} orgs in ${totalBatches} batches`);
+
+  const allExecutions = [];
+
+  // Process batches in parallel
+  const batchPromises = batches.map((batchOrgIds, index) => {
+    const batchNum = index + 1;
+
+    return new Promise(resolve => setTimeout(resolve, index * 30))
+      .then(() => {
+        const startTime = Date.now();
+        this._log(`🚀 Batch ${batchNum}/${totalBatches} starting (lightweight, ${batchOrgIds.length} orgs)`);
+
+        return this._fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, batchOrgIds, batchOptions)
+          .then(results => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            this._log(`✅ Batch ${batchNum} (lightweight) done in ${elapsed}s: ${results.length} execs`);
+            return results;
+          })
+          .catch(error => {
+            this._error(`❌ Batch ${batchNum} (lightweight) FAILED`, error);
+            return [];
+          });
+      });
+  });
+
+  const results = await Promise.all(batchPromises);
+  results.forEach(batchResults => {
+    if (batchResults.length > 0) {
+      allExecutions.push(...batchResults);
+    }
+  });
+
+  this._log(`Returning ${allExecutions.length} executions (lightweight batching)`);
+  return allExecutions;
+}
+
+/**
  * Retry failed org batches in the background
  * Call this after dashboard renders to recover data from orgs that timed out
  * Now handles ACCUMULATED failures from multiple time chunks
@@ -4326,6 +4790,11 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
  * @returns {Promise<Array>} Array of executions for this chunk
  */
 async _fetchExecutionsChunk(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
+  // Use sliding window for small org counts (≤10) to avoid batch timeouts with sub-workflows
+  if (orgIds && orgIds.length > 1 && orgIds.length <= RewstApp.ORG_SLIDING_THRESHOLD) {
+    return await this._fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
   // If too many orgs, batch into parallel queries
   if (orgIds && orgIds.length > RewstApp.ORG_BATCH_SIZE) {
     return await this._fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
@@ -4355,6 +4824,7 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
         updatedAt
         numSuccessfulTasks
         parentExecutionId
+        originatingExecutionId
         organization {
           id
           name
@@ -4384,11 +4854,15 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
   `;
 
   // Match original variable structure exactly
+  // Use options.scope if provided, otherwise fall back to static RewstApp.WORKFLOW_SCOPE
+  const scope = options.scope || RewstApp.WORKFLOW_SCOPE;
   const variables = {
     where: {},
     order: [["createdAt", "desc"]],
     search: {
-      originatingExecutionId: { _eq: null }
+      // Filter based on scope: 'parents' | 'subs' | 'both'
+      ...(scope === 'parents' ? { originatingExecutionId: { _eq: null } } :
+          scope === 'subs' ? { originatingExecutionId: { _ne: null } } : {})
     },
     limit: 10000
   };
@@ -4418,6 +4892,170 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
 
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
   return result.workflowExecutions || [];
+}
+
+/**
+ * Internal: Fetch executions with LIGHTWEIGHT query (for sub-workflows)
+ * Excludes conductor.input and workflow.triggers to reduce data transfer by 80-90%
+ * @private
+ */
+async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
+  // LIGHTWEIGHT QUERY: Excludes conductor.input and workflow.triggers
+  // Used for sub-workflow fetches to avoid massive data transfer (25-250GB of conductor.input + 2.5M-5M trigger objects)
+  const query = `
+    query getWorkflowExecutions($where: WorkflowExecutionWhereInput!, $order: [[String!]!], $search: WorkflowExecutionSearchInput, $limit: Int) {
+      workflowExecutions(
+        where: $where
+        order: $order
+        search: $search
+        limit: $limit
+      ) {
+        id
+        status
+        createdAt
+        updatedAt
+        numSuccessfulTasks
+        parentExecutionId
+        originatingExecutionId
+        organization {
+          id
+          name
+          managingOrgId
+        }
+        workflow {
+          id
+          name
+          humanSecondsSaved
+        }
+      }
+    }
+  `;
+
+  // Match original variable structure exactly
+  // Use options.scope if provided, otherwise fall back to static RewstApp.WORKFLOW_SCOPE
+  const scope = options.scope || RewstApp.WORKFLOW_SCOPE;
+  const variables = {
+    where: {},
+    order: [["createdAt", "desc"]],
+    search: {
+      // Filter based on scope: 'parents' | 'subs' | 'both'
+      ...(scope === 'parents' ? { originatingExecutionId: { _eq: null } } :
+          scope === 'subs' ? { originatingExecutionId: { _ne: null } } : {})
+    },
+    limit: 10000
+  };
+
+  // Add org filter to search (not where) - matches original
+  if (orgIds && orgIds.length > 0) {
+    variables.search.orgId = { _in: orgIds };
+  } else {
+    variables.search.orgId = { _eq: this.orgId };
+  }
+
+  // Add date filters if specified - matches original
+  if (daysAgoStart !== null && daysAgoEnd !== null) {
+    const endDate = new Date(Date.now() - daysAgoStart * 24 * 60 * 60 * 1000).toISOString();
+    const startDate = new Date(Date.now() - daysAgoEnd * 24 * 60 * 60 * 1000).toISOString();
+
+    variables.search.createdAt = {
+      _gt: startDate,
+      _lt: endDate
+    };
+  }
+
+  // Add workflow filter if specified - matches original
+  if (workflowId) {
+    variables.where.workflowId = workflowId;
+  }
+
+  const result = await this._graphql('getWorkflowExecutions', query, variables, options);
+  return result.workflowExecutions || [];
+}
+
+/**
+ * Internal: Fetch executions with LIGHTWEIGHT query (routing method)
+ * Routes to appropriate fetch method (sliding window, batching, or single query)
+ * @private
+ */
+async _fetchExecutionsChunkLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
+  // Use sliding window for small org counts (≤10)
+  if (orgIds && orgIds.length > 1 && orgIds.length <= RewstApp.ORG_SLIDING_THRESHOLD) {
+    return await this._fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
+  // If too many orgs, batch into parallel queries
+  if (orgIds && orgIds.length > RewstApp.ORG_BATCH_SIZE) {
+    return await this._fetchExecutionsMultiOrgLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
+  // Otherwise, run single lightweight query
+  return await this._fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+}
+
+/**
+ * Fetch executions with adaptive chunking using LIGHTWEIGHT query
+ * Same logic as _fetchChunkAdaptive() but uses lightweight query
+ * @private
+ */
+async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
+  const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
+  const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+
+  // Process from endDay backwards to startDay
+  let currentEnd = endDay;
+  let currentChunkIndex = chunkSizeIndex;
+
+  while (currentEnd > startDay) {
+    const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
+    const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
+    const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 10000;
+
+    this._log(`[Lightweight] Fetching days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} (${currentChunkSize}-day chunk, ${timeoutMs/1000}s timeout)...`);
+
+    try {
+      const fetchStart = Date.now();
+      const chunkExecutions = await this._fetchExecutionsChunkLightweight(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options });
+      const elapsed = Date.now() - fetchStart;
+
+      if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
+        // Took too long but succeeded - split for remaining chunks
+        this._log(`⚠️ Lightweight chunk took ${elapsed}ms (>${timeoutMs}ms), reducing chunk size for remaining days`);
+        currentChunkIndex++;
+      }
+
+      allResults.push(...chunkExecutions);
+      this._log(`✓ Got ${chunkExecutions.length} executions (lightweight) in ${elapsed}ms`);
+      currentEnd = currentStart;
+
+    } catch (error) {
+      // Check if it's a timeout/abort error OR our explicit retry signal
+      const isTimeout = error.name === 'AbortError' || error.message?.includes('timed out');
+      const isRetrySignal = error.message?.includes('will retry with smaller');
+
+      this._log(`🔍 Lightweight chunk error: "${error.message}" (timeout: ${isTimeout}, retrySignal: ${isRetrySignal})`);
+
+      if (currentChunkIndex < CHUNK_SIZES.length - 1) {
+        // Try smaller chunk size for this same range
+        const smallerSize = CHUNK_SIZES[currentChunkIndex + 1];
+        this._log(`⚠️ Lightweight chunk failed, retrying days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} with ${smallerSize}-day chunks (was ${currentChunkSize}-day)...`);
+        currentChunkIndex++;
+        // Don't advance currentEnd - retry the same range with smaller chunks
+      } else {
+        // At minimum chunk size and still failing - log and skip this range
+        const dateStart = new Date(Date.now() - currentEnd * 24 * 60 * 60 * 1000).toLocaleDateString();
+        const dateEnd = new Date(Date.now() - currentStart * 24 * 60 * 60 * 1000).toLocaleDateString();
+        this._error(`Failed to fetch ${dateStart} - ${dateEnd} even at minimum chunk size (0.1 day) with lightweight query. Skipping this range.`, error);
+        currentEnd = currentStart; // Skip and move on
+      }
+    }
+
+    // Small delay between chunks to be nice to the API
+    if (currentEnd > startDay) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  return allResults;
 }
 
   /**
@@ -5214,9 +5852,9 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
     const conductorInput = execution.conductor?.input || {};
     const inferred = this._inferTriggerTypeFromInput(conductorInput);
     
-    // Build links
-    const workflowLink = this._buildWorkflowLink(execution.workflow?.id);
-    const executionLink = this._buildExecutionLink(execution.id);
+    // Build links - use execution's org, not logged-in user's org
+    const workflowLink = this._buildWorkflowLink(execution.workflow?.id, execution.organization?.id);
+    const executionLink = this._buildExecutionLink(execution.id, execution.organization?.id);
     
     // Get organization from execution (already fetched!)
     const organization = execution.organization ? {
@@ -5553,7 +6191,33 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
       const result = await response.json();
 
       if (result.errors) {
-        throw new Error(`GraphQL error: ${JSON.stringify(result.errors)}`);
+        const errorStr = JSON.stringify(result.errors);
+
+        // Check for auth errors - reload page to trigger platform's login redirect
+        // Only match the specific AUTH_ERR code from Rewst API to avoid false positives
+        const isAuthError = errorStr.includes('"code":"AUTH_ERR"');
+
+        if (isAuthError) {
+          this._log('🔒 Session expired');
+          // Don't auto-reload - causes infinite loops in iframes
+          // Throw a clear error that the UI can catch and display with login link
+          const sessionError = new Error('SESSION_EXPIRED');
+          sessionError.isSessionExpired = true;
+          // Build login URL with returnTo param for current page
+          // Try to get current path from parent window, fall back to just /s/login
+          let currentPath = '/s/';
+          try {
+            if (window.parent && window.parent !== window) {
+              currentPath = window.parent.location.pathname;
+            }
+          } catch (e) {
+            // Cross-origin, can't access parent path
+          }
+          sessionError.loginUrl = `/s/login?returnTo=${encodeURIComponent(currentPath)}`;
+          throw sessionError;
+        }
+
+        throw new Error(`GraphQL error: ${errorStr}`);
       }
 
       return result.data;
@@ -8925,6 +9589,7 @@ const RewstDOM = {
     const {
       labelKey = items[0]?.label !== undefined ? 'label' : 'name',
       valueKey = items[0]?.value !== undefined ? 'value' : 'id',
+      subtitleKey = null,
       placeholder = 'Search...',
       onSelect = null,
       searchFn = null,
@@ -8975,6 +9640,15 @@ const RewstDOM = {
     }
     container.appendChild(inputWrapper);
 
+    // Create subtitle display below input (for showing ID when selected)
+    let subtitleDisplay = null;
+    if (subtitleKey) {
+      subtitleDisplay = document.createElement('div');
+      subtitleDisplay.className = 'text-xs text-gray-500 mt-1 px-1';
+      subtitleDisplay.style.display = 'none';
+      container.appendChild(subtitleDisplay);
+    }
+
     // Create dropdown
     const dropdown = document.createElement('div');
     dropdown.className = 'hidden absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
@@ -9010,8 +9684,21 @@ const RewstDOM = {
         const itemEl = document.createElement('button');
         itemEl.type = 'button';
         itemEl.className = 'w-full px-3 py-2 text-left text-sm hover:bg-rewst-light transition-colors cursor-pointer';
-        itemEl.textContent = item[labelKey];
         itemEl.dataset.index = idx;
+
+        // If subtitleKey is set, show label + subtitle
+        if (subtitleKey && item[subtitleKey]) {
+          const labelSpan = document.createElement('div');
+          labelSpan.className = 'font-medium';
+          labelSpan.textContent = item[labelKey];
+          const subtitleSpan = document.createElement('div');
+          subtitleSpan.className = 'text-xs text-gray-500';
+          subtitleSpan.textContent = item[subtitleKey];
+          itemEl.appendChild(labelSpan);
+          itemEl.appendChild(subtitleSpan);
+        } else {
+          itemEl.textContent = item[labelKey];
+        }
 
         itemEl.addEventListener('click', () => {
           selectItem(item);
@@ -9052,6 +9739,16 @@ const RewstDOM = {
       dropdown.classList.add('hidden');
       isDropdownOpen = false;
 
+      // Update subtitle display below input if subtitleKey is set
+      if (subtitleKey && subtitleDisplay) {
+        if (item[subtitleKey]) {
+          subtitleDisplay.textContent = item[subtitleKey];
+          subtitleDisplay.style.display = '';
+        } else {
+          subtitleDisplay.style.display = 'none';
+        }
+      }
+
       // Show clear button, hide dropdown arrow
       if (showClearButton) {
         clearBtn.style.display = '';
@@ -9075,6 +9772,11 @@ const RewstDOM = {
       if (showClearButton) {
         clearBtn.style.display = 'none';
         dropdownBtn.style.display = '';
+      }
+
+      // Hide subtitle display
+      if (subtitleDisplay) {
+        subtitleDisplay.style.display = 'none';
       }
 
       input.focus();
@@ -9326,6 +10028,147 @@ const RewstDOM = {
   },
 
   /**
+   * Show session expired overlay with animated logo
+   * Creates and displays a full-screen overlay prompting user to log in again
+   * @param {String} loginUrl - URL to redirect to for login (e.g., '/s/login?returnTo=/s/dashboard')
+   */
+  showSessionExpired(loginUrl = '/s/login') {
+    // Remove old style if exists (to pick up any changes)
+    const oldStyle = document.getElementById('rewst-session-expired-styles');
+    if (oldStyle) oldStyle.remove();
+
+    // Inject CSS
+    const style = document.createElement('style');
+    style.id = 'rewst-session-expired-styles';
+    style.textContent = `
+      #rewst-session-expired-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0, 0, 0, 0.7);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 99999;
+      }
+      #rewst-session-expired-overlay .content {
+        text-align: center;
+        color: #333;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 3rem 2rem;
+        background: rgba(255, 255, 255, 0.95);
+        border-radius: 1.5rem;
+        border: 1px solid rgba(255, 255, 255, 0.8);
+        box-shadow: 0 8px 32px rgba(0, 148, 144, 0.15);
+      }
+      #rewst-session-expired-overlay h2 {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin: 1rem 0 0.5rem 0;
+        color: #333;
+      }
+      #rewst-session-expired-overlay p {
+        margin-bottom: 1.5rem;
+        opacity: 0.8;
+        color: #666;
+      }
+      #rewst-session-expired-overlay a {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        background: #00bbb4;
+        color: white;
+        padding: 0.75rem 2rem;
+        border-radius: 0.5rem;
+        text-decoration: none;
+        font-weight: 500;
+        transition: background 0.2s;
+      }
+      #rewst-session-expired-overlay a:hover {
+        background: #00928f;
+      }
+      @keyframes fall-over {
+        0% {
+          transform: rotate(0deg);
+          filter: grayscale(0%);
+          opacity: 1;
+        }
+        20% {
+          transform: rotate(5deg);
+          filter: grayscale(0%);
+        }
+        40% {
+          transform: rotate(-8deg);
+          filter: grayscale(15%);
+        }
+        55% {
+          transform: rotate(3deg);
+          filter: grayscale(25%);
+        }
+        85% {
+          transform: rotate(-90deg);
+          filter: grayscale(100%);
+          opacity: 0.5;
+        }
+        100% {
+          transform: rotate(-90deg) translateX(-20px);
+          filter: grayscale(100%);
+          opacity: 0.5;
+        }
+      }
+      @keyframes gentle-rock {
+        0%, 100% {
+          transform: rotate(-90deg) translateX(-20px);
+        }
+        50% {
+          transform: rotate(-85deg) translateX(-20px);
+        }
+      }
+      #session-expired-logo {
+        margin-bottom: 20px;
+        animation: fall-over 2s ease-in-out forwards, gentle-rock 3s ease-in-out 2.2s infinite;
+      }
+    `;
+    document.head.appendChild(style);
+
+    // Remove existing overlay if present
+    const existingOverlay = document.getElementById('rewst-session-expired-overlay');
+    if (existingOverlay) {
+      existingOverlay.remove();
+    }
+
+    // Create overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'rewst-session-expired-overlay';
+    overlay.innerHTML = `
+      <div class="content">
+        <img id="session-expired-logo" src="https://app.rewst.io/logo.svg" alt="Rewst" style="width: 80px; height: 80px;">
+        <h2>Session Expired</h2>
+        <p>Please log in again to continue.</p>
+        <a href="${loginUrl}"><span class="material-icons" style="font-size: 18px;">login</span> Log In</a>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    // Reset logo animation so it plays fresh
+    const logo = document.getElementById('session-expired-logo');
+    if (logo) {
+      logo.style.animation = 'none';
+      logo.offsetHeight; // Force reflow
+      logo.style.animation = '';
+    }
+
+    this._log('Session expired overlay shown');
+  },
+
+  /**
    * Rewst Color Palette - Master color reference
    * Maps color names to their CSS variable names and provides RGB values
    */
@@ -9563,7 +10406,7 @@ if (typeof module !== 'undefined' && module.exports) {
       // GLOBAL CONFIGURATION
       const DAYS_TO_FETCH = 30;
       const CACHE_VERSION = '1.5'; // Increment this to invalidate all caches - bumped for IndexedDB migration
-      const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+      const CACHE_DURATION = 5 * 24 * 60 * 60 * 1000; // 5 days in milliseconds
       const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
 
       // ============================================
@@ -9836,6 +10679,10 @@ if (typeof module !== 'undefined' && module.exports) {
         debugLog("✅ RewstApp initialized");
       } catch (error) {
         debugError("❌ Failed to initialize RewstApp:", error);
+        if (error.isSessionExpired) {
+          showSessionExpired(error.loginUrl);
+          return;
+        }
         RewstDOM.showError("Failed to initialize dashboard");
         return;
       }
@@ -10144,7 +10991,7 @@ if (typeof module !== 'undefined' && module.exports) {
 
       // Initialize advanced filters (call this after dashboard data is loaded)
 async function initializeAdvancedFilters() {
-  if (!window.dashboardData) return;
+  if (!window.dashboardData?.executions) return;
 
   // Check if containers exist
   const orgContainer = document.getElementById('org-filter-container');
@@ -10250,6 +11097,12 @@ async function initializeAdvancedFilters() {
         sidebar.classList.toggle('collapsed');
         mainContent.classList.toggle('sidebar-collapsed');
         toggleIcon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+
+        // Hide/show the load sub-workflows button when sidebar collapses
+        const subWorkflowContainer = document.getElementById('load-sub-workflows-container');
+        if (subWorkflowContainer && !subWorkflowContainer.classList.contains('hidden')) {
+          subWorkflowContainer.style.display = sidebar.classList.contains('collapsed') ? 'none' : '';
+        }
       });
 
       // Page navigation
@@ -10357,6 +11210,107 @@ async function initializeAdvancedFilters() {
         lastScrollTop = scrollTop;
       }, { passive: true });
 
+      // Load sub-workflows on demand
+      async function loadSubWorkflows() {
+        const container = document.getElementById('load-sub-workflows-container');
+
+        try {
+          debugLog('🔄 Loading sub-workflows on demand...');
+
+          // Hide button
+          if (container) container.classList.add('hidden');
+
+          // Get current org IDs from dashboard data
+          const orgIds = window.dashboardData?.orgIds || [];
+          const days = window.dashboardData?.days || DAYS_TO_FETCH;
+
+          // Create progress indicator with slower looping progress bar
+          const progressIndicator = document.createElement('div');
+          progressIndicator.id = 'sub-workflow-progress-indicator';
+          progressIndicator.className = 'fixed bottom-4 left-4 z-50 bg-gray-800 text-white px-4 py-3 rounded-lg shadow-lg';
+          progressIndicator.style.minWidth = '250px';
+          progressIndicator.innerHTML = `
+            <div class="flex items-center gap-2 mb-2">
+              <span class="animate-pulse text-rewst-teal">●</span>
+              <span>Loading sub-workflows...</span>
+            </div>
+            <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-full bg-rewst-teal rounded-full progress-pulse-slow"></div>
+            </div>
+          `;
+          document.body.appendChild(progressIndicator);
+
+          // Fetch sub-workflows (pass scope in options)
+          const subExecutions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
+            timeout: 45000,
+            scope: 'subs'
+          });
+
+          debugLog(`✅ Loaded ${subExecutions.length} sub-workflow executions`);
+
+          // Merge sub-workflows into dashboard data
+          window.dashboardData.executions = [...window.dashboardData.executions, ...subExecutions];
+
+          // Update cache with combined data
+          await saveToCache(window.dashboardData, days);
+
+          // Show completion message
+          const indicator = document.getElementById('sub-workflow-progress-indicator');
+          if (indicator) {
+            indicator.innerHTML = `
+              <div class="flex items-center gap-2">
+                <span class="text-green-400">✓</span>
+                <span>+${subExecutions.length} sub-workflows loaded</span>
+              </div>
+            `;
+            setTimeout(() => indicator.remove(), 3000);
+          }
+
+          // Save current dropdown selections before re-render
+          const chartViewSelector = document.getElementById('chart-view-selector');
+          const doughnutViewSelector = document.getElementById('doughnut-view-selector');
+          const savedChartView = chartViewSelector?.value || 'executions';
+          const savedDoughnutView = doughnutViewSelector?.value || 'executions';
+
+          // Re-render current page with updated data
+          pages[currentPage].render();
+
+          // Restore dropdown selections and trigger correct chart renders
+          if (chartViewSelector && savedChartView !== 'executions') {
+            chartViewSelector.value = savedChartView;
+            chartViewSelector.dispatchEvent(new Event('change'));
+          }
+          if (doughnutViewSelector && savedDoughnutView !== 'executions') {
+            doughnutViewSelector.value = savedDoughnutView;
+            doughnutViewSelector.dispatchEvent(new Event('change'));
+          }
+
+          // Update advanced filters to include sub-workflow trigger types
+          initializeAdvancedFilters();
+
+          debugLog('✅ Sub-workflows merged and dashboard updated');
+
+        } catch (error) {
+          debugError('❌ Failed to load sub-workflows:', error);
+
+          // Remove progress indicator if it exists
+          const indicator = document.getElementById('sub-workflow-progress-indicator');
+          if (indicator) {
+            indicator.innerHTML = `
+              <div class="flex items-center gap-2">
+                <span class="text-red-400">✗</span>
+                <span>Failed to load sub-workflows</span>
+              </div>
+            `;
+            setTimeout(() => indicator.remove(), 3000);
+          }
+
+          // Show button again
+          if (container) container.classList.remove('hidden');
+
+          RewstDOM.showError('Failed to load sub-workflows: ' + error.message);
+        }
+      }
 
       // Load dashboard data
       async function loadDashboard(forceRefresh = false) {
@@ -10405,6 +11359,16 @@ async function initializeAdvancedFilters() {
               initializeAdvancedFilters()
               pages[currentPage].render();
 
+              // Show sub-workflow load button if no sub-workflows in cached data
+              // Check if any execution has parentExecutionId (indicating subs are loaded)
+              const hasSubWorkflows = cachedData.executions?.some(e => e.parentExecutionId);
+              if (!hasSubWorkflows) {
+                const subContainer = document.getElementById('load-sub-workflows-container');
+                if (subContainer) {
+                  subContainer.classList.remove('hidden');
+                }
+              }
+
               // Hide loading overlay
               hideLoadingOverlay();
               return;
@@ -10426,6 +11390,13 @@ async function initializeAdvancedFilters() {
 
         } catch (error) {
           debugError("❌ Failed to load dashboard:", error);
+
+          // Check for session expired error
+          if (error.isSessionExpired) {
+            showSessionExpired(error.loginUrl);
+            return;
+          }
+
           restoreButtons();
           const excludeTestToggle = document.getElementById('exclude-test-toggle');
           if (excludeTestToggle) excludeTestToggle.style.display = '';
@@ -10626,7 +11597,14 @@ async function initializeAdvancedFilters() {
           stopMorphAnimation();
         }
       }
-  
+
+      function showSessionExpired(loginUrl) {
+        // Hide loading overlay first
+        hideLoadingOverlay();
+        // Use RewstDOM to show the session expired overlay
+        RewstDOM.showSessionExpired(loginUrl);
+      }
+
       // ==========================================
 // LOGO LOADING ANIMATION WITH ANIME.JS
 // ==========================================
@@ -11129,6 +12107,11 @@ function stopMorphAnimation() {
           debugLog(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
           updateLoadingProgress(15, 'Fetching executions...', 'fetch'); // Start fetch pulse (15→60%)
 
+          // Workflow scope: 'parents' | 'subs' | 'both'
+          // Start with parents only for fast initial load (~15s)
+          // User can load sub-workflows on-demand via button (see bottom-left UI)
+          RewstApp.WORKFLOW_SCOPE = 'parents';
+
           // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
           const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
             timeout: 5000,
@@ -11146,7 +12129,7 @@ function stopMorphAnimation() {
           });
           debugLog(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
 
-          const freshData = { workflows, executions, forms, integrationConfigs };
+          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs };
 
           // Store globally
           window.dashboardData = freshData;
@@ -11166,6 +12149,14 @@ function stopMorphAnimation() {
 
           // Hide loading overlay after rendering
           hideLoadingOverlay();
+
+          // Show sub-workflow load button in sidebar (only if parent-only mode)
+          if (RewstApp.WORKFLOW_SCOPE === 'parents') {
+            const subContainer = document.getElementById('load-sub-workflows-container');
+            if (subContainer) {
+              subContainer.classList.remove('hidden');
+            }
+          }
 
           // Background retry for any failed trigger info fetches
           if (rewst._failedExecutionIds?.length > 0) {
@@ -11202,7 +12193,7 @@ function stopMorphAnimation() {
 
     // HELPER: Get filtered executions based on test run toggle and advanced filters
     function getFilteredExecutions() {
-      if (!window.dashboardData) return [];
+      if (!window.dashboardData?.executions) return [];
       let filtered = window.dashboardData.executions;
       
       // Test runs filter (existing logic)
@@ -11254,6 +12245,14 @@ function stopMorphAnimation() {
         await loadDashboard(true); // Force refresh = true
         RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
       });
+
+      // Sub-workflow load button event listener
+      const subWorkflowBtn = document.getElementById('load-sub-workflows-btn');
+      if (subWorkflowBtn) {
+        subWorkflowBtn.addEventListener('click', async () => {
+          await loadSubWorkflows();
+        });
+      }
 
       const toggleSwitch = document.getElementById('exclude-test-runs');
       const toggleDot = document.querySelector('.toggle-dot');
@@ -11337,6 +12336,25 @@ function stopMorphAnimation() {
  * @version 1.3.3
  */
 
+/**
+ * Get execution subset based on metric type to avoid double-counting
+ * @param {Array} executions - Full execution list (includes parent + sub-workflows)
+ * @param {string} metricType - 'time' (all execs) or 'tasks' (root only) or 'count' (root only)
+ * @returns {Array} - Filtered execution list
+ */
+function getExecutionsForMetric(executions, metricType) {
+    if (metricType === 'tasks' || metricType === 'count') {
+        // For task counts and execution counts: ONLY root executions
+        // Parent's numSuccessfulTasks already includes sub-workflow tasks (rolled up by Rewst)
+        return executions.filter(e => !e.parentExecutionId);
+    } else if (metricType === 'time') {
+        // For time/money: ALL executions (parent + sub-workflows)
+        // Each execution has its own workflow's humanSecondsSaved (NOT rolled up)
+        return executions;
+    }
+    return executions;
+}
+
 function renderDashboard() {
     try {
         // Safety check
@@ -11348,29 +12366,38 @@ function renderDashboard() {
         const { workflows, executions, forms } = window.dashboardData;
         const filteredExecutions = getFilteredExecutions();
 
-        console.log(`Rendering with ${filteredExecutions.length} executions (exclude test: ${document.getElementById('exclude-test-runs')?.checked})`);
+        // Create execution subsets to avoid double-counting
+        // executionsForTime: ALL (parent + subs) - for hours/money calculations
+        // executionsForTasks: ROOT ONLY (no subs) - for task counts, execution counts, success rate
+        const executionsForTime = getExecutionsForMetric(filteredExecutions, 'time');
+        const executionsForTasks = getExecutionsForMetric(filteredExecutions, 'tasks');
+
+        console.log(`Rendering with ${filteredExecutions.length} total executions (${executionsForTasks.length} root, ${executionsForTime.length - executionsForTasks.length} subs) (exclude test: ${document.getElementById('exclude-test-runs')?.checked})`);
 
         document.getElementById('chart-title-time').textContent = `Execution Trend (Last ${DAYS_TO_FETCH} Days)`;
 
         // Calculate metrics
-        const totalHoursSaved = filteredExecutions.reduce((sum, exec) => {
+        // HOURS SAVED: Use executionsForTime (ALL executions) - each has its own humanSecondsSaved
+        const totalHoursSaved = executionsForTime.reduce((sum, exec) => {
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
             return sum + (secondsSaved / 3600);
         }, 0);
 
         const monetaryValue = totalHoursSaved * 50;
 
-        const succeededCount = filteredExecutions.filter(e =>
+        // SUCCESS RATE: Use executionsForTasks (ROOT ONLY) - avoid counting sub-workflow failures twice
+        const succeededCount = executionsForTasks.filter(e =>
             e.status === 'COMPLETED' || e.status === 'SUCCESS' || e.status === 'succeeded'
         ).length;
-        const failedCount = filteredExecutions.filter(e =>
+        const failedCount = executionsForTasks.filter(e =>
             e.status === 'FAILED' || e.status === 'failed'
         ).length;
-        const successRate = filteredExecutions.length > 0
-            ? (succeededCount / filteredExecutions.length * 100).toFixed(1)
+        const successRate = executionsForTasks.length > 0
+            ? (succeededCount / executionsForTasks.length * 100).toFixed(1)
             : 0;
 
-        const formSubmissions = filteredExecutions.filter(e => {
+        // FORM SUBMISSIONS: Use executionsForTasks (ROOT ONLY) - forms are root executions
+        const formSubmissions = executionsForTasks.filter(e => {
             // Skip option generators
             if (e.workflow?.type === 'OPTION_GENERATOR') return false;
 
@@ -11400,40 +12427,87 @@ function renderDashboard() {
             return false;
         }).length;
 
-        const avgMinutesSaved = filteredExecutions.length > 0 ? (totalHoursSaved * 60) / filteredExecutions.length : 0;
+        // AVG MINUTES: Total time (ALL) divided by root execution count (TASKS)
+        const avgMinutesSaved = executionsForTasks.length > 0 ? (totalHoursSaved * 60) / executionsForTasks.length : 0;
+
+        // COMPUTE REAL TREND DATA
+        // Top workflow by hours saved
+        const workflowHours = {};
+        executionsForTime.forEach(exec => {
+            const wfName = exec.workflow?.name || 'Unknown';
+            const hours = (exec.workflow?.humanSecondsSaved || 0) / 3600;
+            workflowHours[wfName] = (workflowHours[wfName] || 0) + hours;
+        });
+        const topWorkflow = Object.entries(workflowHours)
+            .sort((a, b) => b[1] - a[1])[0];
+        const topWorkflowName = topWorkflow ? topWorkflow[0] : null;
+        // Truncate long workflow names
+        const truncatedTopWorkflow = topWorkflowName
+            ? (topWorkflowName.length > 28 ? topWorkflowName.substring(0, 25) + '...' : topWorkflowName)
+            : 'No data';
+
+        // Avg $ per execution
+        const avgDollarPerExec = executionsForTasks.length > 0
+            ? (monetaryValue / executionsForTasks.length).toFixed(2)
+            : '0.00';
+
+        // Max single execution time saved (in minutes)
+        const maxMinutesSaved = executionsForTime.reduce((max, exec) => {
+            const mins = (exec.workflow?.humanSecondsSaved || 0) / 60;
+            return mins > max ? mins : max;
+        }, 0);
+
+        // Form submission stats
+        const formCounts = {};
+        executionsForTasks.forEach(exec => {
+            const triggerType = (exec.triggerInfo?.type || '').toLowerCase();
+            if (triggerType === 'form submission') {
+                const formName = exec.triggerInfo?.formName || exec.workflow?.name || 'Unknown Form';
+                formCounts[formName] = (formCounts[formName] || 0) + 1;
+            }
+        });
+
+        // What % of executions are form submissions
+        const formSubmissionPct = executionsForTasks.length > 0
+            ? ((formSubmissions / executionsForTasks.length) * 100).toFixed(1)
+            : '0';
+
+        // Forms used vs available
+        const formsWithSubmissions = Object.keys(formCounts).length;
+        const formsUnused = forms.length - formsWithSubmissions;
+        const formsUsedTrend = formsWithSubmissions > formsUnused ? 'up' : (formsUnused > formsWithSubmissions ? 'down' : 'neutral');
+
         let metricsAnimated = false;
 
         // Render Metric Cards
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Total Hours Saved',
-            subtitle: 'Last ' + DAYS_TO_FETCH + ' days (all types)',
+            subtitle: 'Last ' + DAYS_TO_FETCH + ' days (includes sub-workflows)',
             value: formatTimeSaved(totalHoursSaved * 3600),
             icon: 'schedule',
             color: 'teal',
             trend: 'up',
-            trendValue: '+12.3%',
+            trendValue: executionsForTime.length.toLocaleString() + ' executions',
             solidBackground: true
         }), '#metric-total-hours');
-        // Animate the value
 
         // Set flag after animations
-        window.hasInitiallyLoaded = true;
         window.hasInitiallyLoaded = true;
 
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Monetary Value',
-            subtitle: 'Total value at $50/hour',
+            subtitle: 'Total value at $50/hour (includes sub-workflows)',
             value: '$' + monetaryValue.toLocaleString('en-US', { maximumFractionDigits: 0 }),
             icon: 'attach_money',
             color: 'fandango',
             trend: 'up',
-            trendValue: '+$2,400 this month',
+            trendValue: '$' + avgDollarPerExec + '/exec avg',
             solidBackground: true
         }), '#metric-total-forms');
 
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Success Rate',
-            subtitle: 'Last ' + DAYS_TO_FETCH + ' days',
+            subtitle: 'Last ' + DAYS_TO_FETCH + ' days (root executions only)',
             value: successRate + '%',
             icon: 'check_circle',
             color: 'snooze',
@@ -11445,12 +12519,12 @@ function renderDashboard() {
 
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Avg. Minutes/Execution',
-            subtitle: 'Per execution (' + DAYS_TO_FETCH + ' days)',
+            subtitle: 'Per root execution (' + DAYS_TO_FETCH + ' days)',
             value: avgMinutesSaved.toFixed(1),
             icon: 'trending_up',
             color: 'teal',
             trend: 'up',
-            trendValue: '+0.5 min',
+            trendValue: maxMinutesSaved > 0 ? 'Max: ' + maxMinutesSaved.toFixed(1) + ' min' : 'No data',
             cardClass: 'card card-accent-teal',
             solidBackground: false
         }), '#metric-avg-time-saved');
@@ -11461,8 +12535,8 @@ function renderDashboard() {
             value: formSubmissions,
             icon: 'edit_note',
             color: 'orange',
-            trend: 'up',
-            trendValue: '+8 this week',
+            trend: formSubmissions > 0 ? 'up' : 'neutral',
+            trendValue: formSubmissionPct + '% of executions',
             cardClass: 'card card-accent-orange',
             solidBackground: false
         }), '#metric-form-submissions');
@@ -11473,8 +12547,8 @@ function renderDashboard() {
             value: forms.length,
             icon: 'assignment',
             color: 'bask',
-            trend: 'neutral',
-            trendValue: 'Stable',
+            trend: formsUsedTrend,
+            trendValue: formsWithSubmissions + ' used, ' + formsUnused + ' unused',
             cardClass: 'card card-accent-bask',
             solidBackground: false
         }), '#metric-form-completion');
@@ -11521,7 +12595,7 @@ function renderDashboard() {
         // Prepare task usage data
         const topChartTaskUsageData = {};
 
-        filteredExecutions.forEach(exec => {
+        executionsForTasks.forEach(exec => {
             if (!exec.createdAt) return;
             const timestamp = parseInt(exec.createdAt, 10);
             if (isNaN(timestamp)) return;
@@ -11550,7 +12624,7 @@ function renderDashboard() {
             topChartTaskUsageData[a].sortKey - topChartTaskUsageData[b].sortKey
         );
 
-        const topChartAllTriggerTypes = [...new Set(filteredExecutions.map(e => e.triggerInfo?.type || 'Unknown'))];
+        const topChartAllTriggerTypes = [...new Set(executionsForTasks.map(e => e.triggerInfo?.type || 'Unknown'))];
 
         const topChartTriggerTypeColors = {
             'Form Submission': { border: RewstDOM.getColor('snooze'), bg: RewstDOM.getColorRgba('snooze', 0.1) },
@@ -11881,11 +12955,15 @@ function renderDashboard() {
             const taskTypeData = [];
             const taskTypeTotals = {};
 
-            filteredExecutions.forEach(exec => {
-                const triggerType = exec.triggerInfo?.type || 'Unknown';
-                const tasks = exec.numSuccessfulTasks || 0;
-                taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + tasks;
-            });
+            // Filter out sub-workflows to avoid double-counting tasks
+            // (parent's numSuccessfulTasks already includes sub-workflow tasks)
+            filteredExecutions
+                .filter(exec => !exec.parentExecutionId) // Only count root/parent executions
+                .forEach(exec => {
+                    const triggerType = exec.triggerInfo?.type || 'Unknown';
+                    const tasks = exec.numSuccessfulTasks || 0;
+                    taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + tasks;
+                });
 
             Object.entries(taskTypeTotals).forEach(([type, count]) => {
                 taskTypeData.push({ type, count });
@@ -11992,8 +13070,9 @@ function renderDashboard() {
         });
 
         // Top workflows table
+        // First pass: count ROOT executions (executionsForTasks) for accurate counts
         const workflowGroups = {};
-        filteredExecutions.forEach(exec => {
+        executionsForTasks.forEach(exec => {
             const wfName = exec.workflow?.name || 'Unknown Workflow';
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
             const hoursSaved = secondsSaved / 3600;
@@ -12008,7 +13087,7 @@ function renderDashboard() {
                     const execOrgId = exec.organization?.id;
                     const fallbackOrgId = execOrgId || window.selectedOrg?.id;
                     if (fallbackOrgId) {
-                        wfLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${wfId}`;
+                        wfLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/workflows/${wfId}`;
                         // Flag if using a different org than selected (might not be accessible)
                         if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
                             linkFromManagedOrg = true;
@@ -12037,6 +13116,21 @@ function renderDashboard() {
             } else if (exec.status === 'FAILED' || exec.status === 'failed') {
                 workflowGroups[wfName].failed++;
             }
+        });
+
+        // Second pass: Add hours saved from sub-workflows (executionsForTime includes ALL)
+        // Don't increment execution counts - those should only count root executions
+        const subWorkflows = executionsForTime.filter(e => e.parentExecutionId);
+        subWorkflows.forEach(exec => {
+            const wfName = exec.workflow?.name || 'Unknown Workflow';
+            const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
+            const hoursSaved = secondsSaved / 3600;
+
+            // If this workflow was already initialized by root executions, add its sub-workflow hours
+            if (workflowGroups[wfName]) {
+                workflowGroups[wfName].hours_saved += hoursSaved;
+            }
+            // Note: We don't create new entries for sub-only workflows, only add to existing workflows
         });
 
         const topWorkflows = Object.values(workflowGroups)
@@ -12185,7 +13279,7 @@ function renderDashboard() {
                 const execOrgId = exec.organization?.id;
                 const fallbackOrgId = execOrgId || window.selectedOrg?.id;
                 if (fallbackOrgId) {
-                    formLink = `https://app.rewst.io/organizations/${fallbackOrgId}/forms/${formId}`;
+                    formLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/forms/${formId}`;
                     if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
                         formLinkFromManagedOrg = true;
                     }
@@ -12201,7 +13295,7 @@ function renderDashboard() {
                 const execOrgId = exec.organization?.id;
                 const fallbackOrgId = execOrgId || window.selectedOrg?.id;
                 if (fallbackOrgId) {
-                    workflowLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${workflowId}`;
+                    workflowLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/workflows/${workflowId}`;
                     if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
                         workflowLinkFromManagedOrg = true;
                     }
@@ -12331,38 +13425,27 @@ function renderDashboard() {
         RewstDOM.place(formSubmissionsTable, '#table-form-submissions');
 
         // Workflow execution summary table
+        // Process ALL executions (root + sub-workflows) - each gets its own row
         const executionGroups = {};
 
+        // Process all executions (includes both root and sub-workflows)
         filteredExecutions.forEach(exec => {
             const workflowId = exec.workflow?.id;
             const workflowName = exec.workflow?.name || 'Unknown Workflow';
             const triggerType = exec.triggerInfo?.type || 'Unknown';
             const workflowType = exec.workflow?.type || 'STANDARD';
             const groupKey = workflowName + '|' + triggerType;
+            const isSubWorkflow = !!exec.parentExecutionId;
 
             // Check if workflow exists in workflows list
             const workflowExists = workflowId ? workflows.find(w => w.id === workflowId) : null;
 
             if (!executionGroups[groupKey]) {
-                // Build workflow link with fallback if missing
-                let workflowLink = exec.workflow?.link;
-                let linkFromManagedOrg = false;
-                if (!workflowLink && workflowId) {
-                    const execOrgId = exec.organization?.id;
-                    const fallbackOrgId = execOrgId || window.selectedOrg?.id;
-                    if (fallbackOrgId) {
-                        workflowLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${workflowId}`;
-                        if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
-                            linkFromManagedOrg = true;
-                        }
-                    }
-                }
-
                 executionGroups[groupKey] = {
                     workflow: workflowName,
                     workflow_id: workflowId || null,
-                    workflow_link: workflowLink,
-                    link_from_managed_org: linkFromManagedOrg,
+                    workflow_link: exec.workflow?.link || null,  // Use link from execution object
+                    link_from_managed_org: false,  // Could enhance this if needed
                     workflow_type: workflowType,
                     type: triggerType,
                     total_runs: 0,
@@ -12370,13 +13453,21 @@ function renderDashboard() {
                     failed: 0,
                     total_tasks: 0,
                     total_hours_saved: 0,
-                    workflow_missing: !workflowExists && !workflowId
+                    workflow_missing: !workflowExists && !workflowId,
+                    is_sub_workflow: isSubWorkflow  // Track if this group contains sub-workflows
                 };
             }
 
+            // Count all executions (root and sub show as separate rows with their own counts)
             executionGroups[groupKey].total_runs++;
-            executionGroups[groupKey].total_tasks += exec.tasksUsed || 0;
 
+            // For sub-workflows, don't add tasks (to avoid double-counting with parent)
+            // Only count tasks for root executions
+            if (!isSubWorkflow) {
+                executionGroups[groupKey].total_tasks += exec.tasksUsed || 0;
+            }
+
+            // Add hours for all executions (each has its own workflow's humanSecondsSaved)
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
             executionGroups[groupKey].total_hours_saved += secondsSaved / 3600;
 
@@ -12520,18 +13611,48 @@ function formatTimeSaved(seconds) {
 }
 
 function renderWorkflowDetailsDashboard() {
-  if (!window.dashboardData || !window.dashboardData.workflows) {
+  if (!window.dashboardData) {
     console.error("No dashboard data available");
     return;
   }
 
-  const { workflows } = window.dashboardData;
+  // Build combined workflows list from both workflows array AND execution data
+  // This ensures workflows from managed orgs appear in the dropdown
+  const workflowsFromApi = window.dashboardData.workflows || [];
+  const workflowMap = new Map();
+
+  // Add workflows from API first
+  workflowsFromApi.forEach(w => {
+    workflowMap.set(w.id, w);
+  });
+
+  // Add workflows from executions (for managed org workflows not in API response)
+  if (window.dashboardData.executions) {
+    window.dashboardData.executions.forEach(exec => {
+      if (exec.workflow?.id && !workflowMap.has(exec.workflow.id)) {
+        const execOrgId = exec.organization?.id;
+        workflowMap.set(exec.workflow.id, {
+          id: exec.workflow.id,
+          name: exec.workflow.name,
+          type: exec.workflow.type,
+          humanSecondsSaved: exec.workflow.humanSecondsSaved,
+          triggers: exec.workflow.triggers || [],
+          orgId: execOrgId,
+          link: execOrgId ? `${rewst._getBaseUrl()}/organizations/${execOrgId}/workflows/${exec.workflow.id}` : null
+        });
+      }
+    });
+  }
+
+  const workflows = Array.from(workflowMap.values()).sort((a, b) =>
+    (a.name || '').localeCompare(b.name || '')
+  );
 
   // If already initialized and we have a selected workflow, just re-render it with new filters
   if (window.workflowSelectorInitialized) {
     if (window.selectedWorkflow) {
       const filteredExecutions = getFilteredExecutions();
-      
+
       // Trigger fade animation on the display area
       const displayArea = document.getElementById("workflow-display-area");
       if (displayArea) {
@@ -12539,7 +13660,7 @@ function renderWorkflowDetailsDashboard() {
         displayArea.offsetHeight; // Trigger reflow
         displayArea.style.animation = 'fadeInUp 0.4s ease-out';
       }
-      
+
       renderSelectedWorkflow(window.selectedWorkflow, filteredExecutions);
     }
     return;
@@ -12564,7 +13685,7 @@ function renderWorkflowDetailsDashboard() {
 
   RewstDOM.place(autocomplete, "#workflow-selector");
   window.workflowSelectorInitialized = true;
-  console.log("✅ Workflow selector initialized");
+  console.log(`✅ Workflow selector initialized with ${workflows.length} workflows (${workflowsFromApi.length} from API, ${workflows.length - workflowsFromApi.length} from executions)`);
 }
 
 /**
@@ -12574,24 +13695,35 @@ function renderSelectedWorkflow(workflow, executions) {
   // Store for re-rendering on filter changes
   window.selectedWorkflow = workflow;
 
-  console.log("Selected workflow:", workflow.name);
+  console.log("Selected workflow:", workflow.name, "ID:", workflow.id);
+  console.log("Total executions to filter:", executions.length);
+
+  // Debug: log sample execution workflow IDs to check for mismatches
+  const sampleExecs = executions.slice(0, 5);
+  console.log("Sample execution workflow IDs:", sampleExecs.map(e => e.workflow?.id));
 
   const displayArea = document.getElementById("workflow-display-area");
   displayArea.style.display = "block";
 
   document.getElementById("selected-workflow-name").textContent = workflow.name;
-  document.getElementById("selected-workflow-link").href = workflow.link || `https://app.rewst.io/workflows/${workflow.id}`;
+
+  // Build workflow link with organization ID (per REWST_LINK_PATTERNS.md)
+  const baseUrl = rewst._getBaseUrl(); // Returns https://app.rewst.io or configured URL
+  const orgId = window.selectedOrg?.id || rewst.orgId;
+  const workflowLink = workflow.link || (orgId ? `${baseUrl}/organizations/${orgId}/workflows/${workflow.id}` : null);
+
+  document.getElementById("selected-workflow-link").href = workflowLink;
 
   const workflowExecutions = executions.filter(
     (e) => e.workflow?.id === workflow.id
   );
 
-  console.log(`Found ${workflowExecutions.length} executions for this workflow`);
+  console.log(`Found ${workflowExecutions.length} executions for workflow ID ${workflow.id}`);
 
   renderWorkflowMetrics(workflowExecutions);
   renderWorkflowTimeline(workflowExecutions);
   renderWorkflowFailures(workflowExecutions);
-  renderWorkflowExecutionsTable(workflowExecutions);
+  renderWorkflowExecutionsTable(workflowExecutions, executions); // Pass full executions for parent lookup
 }
 
 /**
@@ -12626,12 +13758,9 @@ function renderWorkflowMetrics(execs) {
     0
   );
 
-  const runtimes = execs
-    .filter((e) => e.createdAt && e.updatedAt)
-    .map((e) => parseInt(e.updatedAt) - parseInt(e.createdAt));
-  const avgRuntime =
-    runtimes.length > 0
-      ? (runtimes.reduce((a, b) => a + b, 0) / runtimes.length / 1000).toFixed(1)
+  const avgTasksPerRun =
+    totalExecutions > 0
+      ? (totalTasksUsed / totalExecutions).toFixed(1)
       : 0;
 
   // Use formatTimeSaved for the time saved metric
@@ -12684,10 +13813,10 @@ function renderWorkflowMetrics(execs) {
   });
 
   RewstDOM.loadMetricCard("#workflow-metric-runtime", {
-    title: "Avg Runtime",
-    subtitle: "Average execution time",
-    value: avgRuntime + "s",
-    icon: "timer",
+    title: "Avg Tasks Per Run",
+    subtitle: "Average tasks used",
+    value: avgTasksPerRun,
+    icon: "functions",
     color: "fandango",
     cardClass: "card card-accent-fandango",
     solidBackground: false,
@@ -12855,37 +13984,71 @@ function renderWorkflowFailures(execs) {
 /**
  * Render recent executions table
  */
-function renderWorkflowExecutionsTable(execs) {
+function renderWorkflowExecutionsTable(execs, allExecutions = []) {
   const recentExecs = execs
     .sort((a, b) => parseInt(b.createdAt) - parseInt(a.createdAt))
     .slice(0, 100);
 
-  const data = recentExecs.map((e) => ({
-    execution_id: e.id,
-    execution_link: e.link,
-    timestamp: parseInt(e.createdAt), // KEEP RAW TIMESTAMP HERE
-    status: e.status,
-    organization: e.organization?.name || "Unknown",
-    tasks_used: e.tasksUsed || 0,
-    runtime:
-      e.createdAt && e.updatedAt
-        ? ((parseInt(e.updatedAt) - parseInt(e.createdAt)) / 1000).toFixed(1)
-        : 0, // KEEP RAW NUMBER, NO "s"
-    trigger_type: e.triggerInfo?.type || "Unknown",
-  }));
+  // Check if any executions have parents (sub-workflows)
+  // Use originatingExecutionId (root) with fallback to parentExecutionId
+  const hasAnySubWorkflows = recentExecs.some(e => e.originatingExecutionId || e.parentExecutionId);
+
+  // Build a lookup map for originating executions (execution ID -> workflow name)
+  const parentLookup = new Map();
+  if (hasAnySubWorkflows && allExecutions.length > 0) {
+    allExecutions.forEach(exec => {
+      parentLookup.set(exec.id, exec.workflow?.name || 'Unknown Workflow');
+    });
+  }
+
+  const data = recentExecs.map((e) => {
+    const baseUrl = rewst._getBaseUrl();
+    const orgId = e.organization?.id || rewst.orgId;
+
+    // Look up originating (root) workflow name if this is a sub-workflow
+    // Use originatingExecutionId to link to the root execution, fallback to parentExecutionId
+    const originatingId = e.originatingExecutionId || e.parentExecutionId;
+    const originatingWorkflowName = originatingId ? parentLookup.get(originatingId) : null;
+
+    return {
+      execution_id: e.id,
+      execution_link: e.link,
+      timestamp: parseInt(e.createdAt), // KEEP RAW TIMESTAMP HERE
+      status: e.status,
+      organization: e.organization?.name || "Unknown",
+      parent_execution: originatingId ? {
+        id: originatingId,
+        link: `${baseUrl}/organizations/${orgId}/results/${originatingId}`,
+        workflowName: originatingWorkflowName || 'Unknown Workflow'
+      } : null,
+      tasks_used: e.tasksUsed || 0,
+      trigger_type: e.triggerInfo?.type || "Unknown",
+    };
+  });
+
+  // Conditionally include parent_execution column if any sub-workflows exist
+  const columns = ["execution_id", "timestamp", "status", "organization"];
+  if (hasAnySubWorkflows) {
+    columns.push("parent_execution");
+  }
+  columns.push("tasks_used", "trigger_type");
+
+  const headers = {
+    execution_id: "Execution",
+    timestamp: "Date",
+    status: "Status",
+    organization: "Organization",
+    tasks_used: "Tasks Used",
+    trigger_type: "Trigger Type"
+  };
+  if (hasAnySubWorkflows) {
+    headers.parent_execution = "Parent Execution";
+  }
 
   const table = RewstDOM.createTable(data, {
     title: '<span class="material-icons text-rewst-teal">history</span> Recent Executions',
-    columns: ["execution_id", "timestamp", "status", "organization", "tasks_used", "runtime", "trigger_type"],
-    headers: {
-      execution_id: "Execution",
-      timestamp: "Date",
-      status: "Status",
-      organization: "Organization",
-      tasks_used: "Tasks Used",
-      runtime: "Runtime",
-      trigger_type: "Trigger Type"
-    },
+    columns: columns,
+    headers: headers,
     searchable: true,
     filters: {
       timestamp: {
@@ -12898,6 +14061,10 @@ function renderWorkflowExecutionsTable(execs) {
     transforms: {
       execution_id: (value, row) =>
         `<a href="${row.execution_link}" target="_blank" class="flex items-center gap-2 text-rewst-teal hover:text-rewst-light-teal"><span class="material-icons" style="font-size:16px;">open_in_new</span><span>View execution</span></a>`,
+      parent_execution: (value, row) => {
+        if (!row.parent_execution) return '—';
+        return `<a href="${row.parent_execution.link}" target="_blank" class="flex items-center gap-2 text-rewst-teal hover:text-rewst-light-teal" title="${row.parent_execution.workflowName}"><span class="material-icons" style="font-size:16px;">open_in_new</span><span>View Parent</span></a>`;
+      },
       timestamp: (value) => {
         const date = new Date(value);
         const dateStr = date.toLocaleDateString('en-US', {
@@ -12911,12 +14078,6 @@ function renderWorkflowExecutionsTable(execs) {
           hour12: true
         });
         return `${dateStr} ${timeStr}`;
-      },
-      runtime: (value) => {
-        if (value === null || value === undefined) return 'N/A';
-        const numValue = parseFloat(value);
-        if (isNaN(numValue)) return 'N/A';
-        return numValue.toFixed(1) + 's';
       },
       tasks_used: (value) => {
         return value ? value.toLocaleString() : '0';
@@ -13168,7 +14329,7 @@ function renderSelectedForm(selected) {
     if (!formLink && selected.id) {
       const orgId = executions[0]?.organization?.id || window.selectedOrg?.id;
       if (orgId) {
-        formLink = `https://app.rewst.io/organizations/${orgId}/forms/${selected.id}`;
+        formLink = `${rewst._getBaseUrl()}/organizations/${orgId}/forms/${selected.id}`;
       }
     }
     linkEl.href = formLink || '#';
@@ -13540,11 +14701,11 @@ function renderFormSubmissionsTable(executions) {
     // 2. Build from execution ID and org ID
     const orgId = e.organization?.id || e.triggerInfo?.organization?.id;
     if (e.id && orgId) {
-      return `https://app.rewst.io/organizations/${orgId}/results/${e.id}`;
+      return `${rewst._getBaseUrl()}/organizations/${orgId}/results/${e.id}`;
     }
     // 3. Try using selected org as fallback (execution might be from parent org)
     if (e.id && window.selectedOrg?.id) {
-      return `https://app.rewst.io/organizations/${window.selectedOrg.id}/results/${e.id}`;
+      return `${rewst._getBaseUrl()}/organizations/${window.selectedOrg.id}/results/${e.id}`;
     }
     return null;
   }

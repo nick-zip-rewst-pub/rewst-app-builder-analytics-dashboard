@@ -38,18 +38,48 @@ function formatTimeSaved(seconds) {
 }
 
 function renderWorkflowDetailsDashboard() {
-  if (!window.dashboardData || !window.dashboardData.workflows) {
+  if (!window.dashboardData) {
     console.error("No dashboard data available");
     return;
   }
 
-  const { workflows } = window.dashboardData;
+  // Build combined workflows list from both workflows array AND execution data
+  // This ensures workflows from managed orgs appear in the dropdown
+  const workflowsFromApi = window.dashboardData.workflows || [];
+  const workflowMap = new Map();
+
+  // Add workflows from API first
+  workflowsFromApi.forEach(w => {
+    workflowMap.set(w.id, w);
+  });
+
+  // Add workflows from executions (for managed org workflows not in API response)
+  if (window.dashboardData.executions) {
+    window.dashboardData.executions.forEach(exec => {
+      if (exec.workflow?.id && !workflowMap.has(exec.workflow.id)) {
+        const execOrgId = exec.organization?.id;
+        workflowMap.set(exec.workflow.id, {
+          id: exec.workflow.id,
+          name: exec.workflow.name,
+          type: exec.workflow.type,
+          humanSecondsSaved: exec.workflow.humanSecondsSaved,
+          triggers: exec.workflow.triggers || [],
+          orgId: execOrgId,
+          link: execOrgId ? `${rewst._getBaseUrl()}/organizations/${execOrgId}/workflows/${exec.workflow.id}` : null
+        });
+      }
+    });
+  }
+
+  const workflows = Array.from(workflowMap.values()).sort((a, b) =>
+    (a.name || '').localeCompare(b.name || '')
+  );
 
   // If already initialized and we have a selected workflow, just re-render it with new filters
   if (window.workflowSelectorInitialized) {
     if (window.selectedWorkflow) {
       const filteredExecutions = getFilteredExecutions();
-      
+
       // Trigger fade animation on the display area
       const displayArea = document.getElementById("workflow-display-area");
       if (displayArea) {
@@ -57,7 +87,7 @@ function renderWorkflowDetailsDashboard() {
         displayArea.offsetHeight; // Trigger reflow
         displayArea.style.animation = 'fadeInUp 0.4s ease-out';
       }
-      
+
       renderSelectedWorkflow(window.selectedWorkflow, filteredExecutions);
     }
     return;
@@ -82,7 +112,7 @@ function renderWorkflowDetailsDashboard() {
 
   RewstDOM.place(autocomplete, "#workflow-selector");
   window.workflowSelectorInitialized = true;
-  console.log("✅ Workflow selector initialized");
+  console.log(`✅ Workflow selector initialized with ${workflows.length} workflows (${workflowsFromApi.length} from API, ${workflows.length - workflowsFromApi.length} from executions)`);
 }
 
 /**
@@ -92,24 +122,35 @@ function renderSelectedWorkflow(workflow, executions) {
   // Store for re-rendering on filter changes
   window.selectedWorkflow = workflow;
 
-  console.log("Selected workflow:", workflow.name);
+  console.log("Selected workflow:", workflow.name, "ID:", workflow.id);
+  console.log("Total executions to filter:", executions.length);
+
+  // Debug: log sample execution workflow IDs to check for mismatches
+  const sampleExecs = executions.slice(0, 5);
+  console.log("Sample execution workflow IDs:", sampleExecs.map(e => e.workflow?.id));
 
   const displayArea = document.getElementById("workflow-display-area");
   displayArea.style.display = "block";
 
   document.getElementById("selected-workflow-name").textContent = workflow.name;
-  document.getElementById("selected-workflow-link").href = workflow.link || `https://app.rewst.io/workflows/${workflow.id}`;
+
+  // Build workflow link with organization ID (per REWST_LINK_PATTERNS.md)
+  const baseUrl = rewst._getBaseUrl(); // Returns https://app.rewst.io or configured URL
+  const orgId = window.selectedOrg?.id || rewst.orgId;
+  const workflowLink = workflow.link || (orgId ? `${baseUrl}/organizations/${orgId}/workflows/${workflow.id}` : null);
+
+  document.getElementById("selected-workflow-link").href = workflowLink;
 
   const workflowExecutions = executions.filter(
     (e) => e.workflow?.id === workflow.id
   );
 
-  console.log(`Found ${workflowExecutions.length} executions for this workflow`);
+  console.log(`Found ${workflowExecutions.length} executions for workflow ID ${workflow.id}`);
 
   renderWorkflowMetrics(workflowExecutions);
   renderWorkflowTimeline(workflowExecutions);
   renderWorkflowFailures(workflowExecutions);
-  renderWorkflowExecutionsTable(workflowExecutions);
+  renderWorkflowExecutionsTable(workflowExecutions, executions); // Pass full executions for parent lookup
 }
 
 /**
@@ -144,12 +185,9 @@ function renderWorkflowMetrics(execs) {
     0
   );
 
-  const runtimes = execs
-    .filter((e) => e.createdAt && e.updatedAt)
-    .map((e) => parseInt(e.updatedAt) - parseInt(e.createdAt));
-  const avgRuntime =
-    runtimes.length > 0
-      ? (runtimes.reduce((a, b) => a + b, 0) / runtimes.length / 1000).toFixed(1)
+  const avgTasksPerRun =
+    totalExecutions > 0
+      ? (totalTasksUsed / totalExecutions).toFixed(1)
       : 0;
 
   // Use formatTimeSaved for the time saved metric
@@ -202,10 +240,10 @@ function renderWorkflowMetrics(execs) {
   });
 
   RewstDOM.loadMetricCard("#workflow-metric-runtime", {
-    title: "Avg Runtime",
-    subtitle: "Average execution time",
-    value: avgRuntime + "s",
-    icon: "timer",
+    title: "Avg Tasks Per Run",
+    subtitle: "Average tasks used",
+    value: avgTasksPerRun,
+    icon: "functions",
     color: "fandango",
     cardClass: "card card-accent-fandango",
     solidBackground: false,
@@ -373,37 +411,71 @@ function renderWorkflowFailures(execs) {
 /**
  * Render recent executions table
  */
-function renderWorkflowExecutionsTable(execs) {
+function renderWorkflowExecutionsTable(execs, allExecutions = []) {
   const recentExecs = execs
     .sort((a, b) => parseInt(b.createdAt) - parseInt(a.createdAt))
     .slice(0, 100);
 
-  const data = recentExecs.map((e) => ({
-    execution_id: e.id,
-    execution_link: e.link,
-    timestamp: parseInt(e.createdAt), // KEEP RAW TIMESTAMP HERE
-    status: e.status,
-    organization: e.organization?.name || "Unknown",
-    tasks_used: e.tasksUsed || 0,
-    runtime:
-      e.createdAt && e.updatedAt
-        ? ((parseInt(e.updatedAt) - parseInt(e.createdAt)) / 1000).toFixed(1)
-        : 0, // KEEP RAW NUMBER, NO "s"
-    trigger_type: e.triggerInfo?.type || "Unknown",
-  }));
+  // Check if any executions have parents (sub-workflows)
+  // Use originatingExecutionId (root) with fallback to parentExecutionId
+  const hasAnySubWorkflows = recentExecs.some(e => e.originatingExecutionId || e.parentExecutionId);
+
+  // Build a lookup map for originating executions (execution ID -> workflow name)
+  const parentLookup = new Map();
+  if (hasAnySubWorkflows && allExecutions.length > 0) {
+    allExecutions.forEach(exec => {
+      parentLookup.set(exec.id, exec.workflow?.name || 'Unknown Workflow');
+    });
+  }
+
+  const data = recentExecs.map((e) => {
+    const baseUrl = rewst._getBaseUrl();
+    const orgId = e.organization?.id || rewst.orgId;
+
+    // Look up originating (root) workflow name if this is a sub-workflow
+    // Use originatingExecutionId to link to the root execution, fallback to parentExecutionId
+    const originatingId = e.originatingExecutionId || e.parentExecutionId;
+    const originatingWorkflowName = originatingId ? parentLookup.get(originatingId) : null;
+
+    return {
+      execution_id: e.id,
+      execution_link: e.link,
+      timestamp: parseInt(e.createdAt), // KEEP RAW TIMESTAMP HERE
+      status: e.status,
+      organization: e.organization?.name || "Unknown",
+      parent_execution: originatingId ? {
+        id: originatingId,
+        link: `${baseUrl}/organizations/${orgId}/results/${originatingId}`,
+        workflowName: originatingWorkflowName || 'Unknown Workflow'
+      } : null,
+      tasks_used: e.tasksUsed || 0,
+      trigger_type: e.triggerInfo?.type || "Unknown",
+    };
+  });
+
+  // Conditionally include parent_execution column if any sub-workflows exist
+  const columns = ["execution_id", "timestamp", "status", "organization"];
+  if (hasAnySubWorkflows) {
+    columns.push("parent_execution");
+  }
+  columns.push("tasks_used", "trigger_type");
+
+  const headers = {
+    execution_id: "Execution",
+    timestamp: "Date",
+    status: "Status",
+    organization: "Organization",
+    tasks_used: "Tasks Used",
+    trigger_type: "Trigger Type"
+  };
+  if (hasAnySubWorkflows) {
+    headers.parent_execution = "Parent Execution";
+  }
 
   const table = RewstDOM.createTable(data, {
     title: '<span class="material-icons text-rewst-teal">history</span> Recent Executions',
-    columns: ["execution_id", "timestamp", "status", "organization", "tasks_used", "runtime", "trigger_type"],
-    headers: {
-      execution_id: "Execution",
-      timestamp: "Date",
-      status: "Status",
-      organization: "Organization",
-      tasks_used: "Tasks Used",
-      runtime: "Runtime",
-      trigger_type: "Trigger Type"
-    },
+    columns: columns,
+    headers: headers,
     searchable: true,
     filters: {
       timestamp: {
@@ -416,6 +488,10 @@ function renderWorkflowExecutionsTable(execs) {
     transforms: {
       execution_id: (value, row) =>
         `<a href="${row.execution_link}" target="_blank" class="flex items-center gap-2 text-rewst-teal hover:text-rewst-light-teal"><span class="material-icons" style="font-size:16px;">open_in_new</span><span>View execution</span></a>`,
+      parent_execution: (value, row) => {
+        if (!row.parent_execution) return '—';
+        return `<a href="${row.parent_execution.link}" target="_blank" class="flex items-center gap-2 text-rewst-teal hover:text-rewst-light-teal" title="${row.parent_execution.workflowName}"><span class="material-icons" style="font-size:16px;">open_in_new</span><span>View Parent</span></a>`;
+      },
       timestamp: (value) => {
         const date = new Date(value);
         const dateStr = date.toLocaleDateString('en-US', {
@@ -429,12 +505,6 @@ function renderWorkflowExecutionsTable(execs) {
           hour12: true
         });
         return `${dateStr} ${timeStr}`;
-      },
-      runtime: (value) => {
-        if (value === null || value === undefined) return 'N/A';
-        const numValue = parseFloat(value);
-        if (isNaN(numValue)) return 'N/A';
-        return numValue.toFixed(1) + 's';
       },
       tasks_used: (value) => {
         return value ? value.toLocaleString() : '0';

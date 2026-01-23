@@ -5,6 +5,25 @@
  * @version 1.3.3
  */
 
+/**
+ * Get execution subset based on metric type to avoid double-counting
+ * @param {Array} executions - Full execution list (includes parent + sub-workflows)
+ * @param {string} metricType - 'time' (all execs) or 'tasks' (root only) or 'count' (root only)
+ * @returns {Array} - Filtered execution list
+ */
+function getExecutionsForMetric(executions, metricType) {
+    if (metricType === 'tasks' || metricType === 'count') {
+        // For task counts and execution counts: ONLY root executions
+        // Parent's numSuccessfulTasks already includes sub-workflow tasks (rolled up by Rewst)
+        return executions.filter(e => !e.parentExecutionId);
+    } else if (metricType === 'time') {
+        // For time/money: ALL executions (parent + sub-workflows)
+        // Each execution has its own workflow's humanSecondsSaved (NOT rolled up)
+        return executions;
+    }
+    return executions;
+}
+
 function renderDashboard() {
     try {
         // Safety check
@@ -16,29 +35,38 @@ function renderDashboard() {
         const { workflows, executions, forms } = window.dashboardData;
         const filteredExecutions = getFilteredExecutions();
 
-        console.log(`Rendering with ${filteredExecutions.length} executions (exclude test: ${document.getElementById('exclude-test-runs')?.checked})`);
+        // Create execution subsets to avoid double-counting
+        // executionsForTime: ALL (parent + subs) - for hours/money calculations
+        // executionsForTasks: ROOT ONLY (no subs) - for task counts, execution counts, success rate
+        const executionsForTime = getExecutionsForMetric(filteredExecutions, 'time');
+        const executionsForTasks = getExecutionsForMetric(filteredExecutions, 'tasks');
+
+        console.log(`Rendering with ${filteredExecutions.length} total executions (${executionsForTasks.length} root, ${executionsForTime.length - executionsForTasks.length} subs) (exclude test: ${document.getElementById('exclude-test-runs')?.checked})`);
 
         document.getElementById('chart-title-time').textContent = `Execution Trend (Last ${DAYS_TO_FETCH} Days)`;
 
         // Calculate metrics
-        const totalHoursSaved = filteredExecutions.reduce((sum, exec) => {
+        // HOURS SAVED: Use executionsForTime (ALL executions) - each has its own humanSecondsSaved
+        const totalHoursSaved = executionsForTime.reduce((sum, exec) => {
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
             return sum + (secondsSaved / 3600);
         }, 0);
 
         const monetaryValue = totalHoursSaved * 50;
 
-        const succeededCount = filteredExecutions.filter(e =>
+        // SUCCESS RATE: Use executionsForTasks (ROOT ONLY) - avoid counting sub-workflow failures twice
+        const succeededCount = executionsForTasks.filter(e =>
             e.status === 'COMPLETED' || e.status === 'SUCCESS' || e.status === 'succeeded'
         ).length;
-        const failedCount = filteredExecutions.filter(e =>
+        const failedCount = executionsForTasks.filter(e =>
             e.status === 'FAILED' || e.status === 'failed'
         ).length;
-        const successRate = filteredExecutions.length > 0
-            ? (succeededCount / filteredExecutions.length * 100).toFixed(1)
+        const successRate = executionsForTasks.length > 0
+            ? (succeededCount / executionsForTasks.length * 100).toFixed(1)
             : 0;
 
-        const formSubmissions = filteredExecutions.filter(e => {
+        // FORM SUBMISSIONS: Use executionsForTasks (ROOT ONLY) - forms are root executions
+        const formSubmissions = executionsForTasks.filter(e => {
             // Skip option generators
             if (e.workflow?.type === 'OPTION_GENERATOR') return false;
 
@@ -68,40 +96,87 @@ function renderDashboard() {
             return false;
         }).length;
 
-        const avgMinutesSaved = filteredExecutions.length > 0 ? (totalHoursSaved * 60) / filteredExecutions.length : 0;
+        // AVG MINUTES: Total time (ALL) divided by root execution count (TASKS)
+        const avgMinutesSaved = executionsForTasks.length > 0 ? (totalHoursSaved * 60) / executionsForTasks.length : 0;
+
+        // COMPUTE REAL TREND DATA
+        // Top workflow by hours saved
+        const workflowHours = {};
+        executionsForTime.forEach(exec => {
+            const wfName = exec.workflow?.name || 'Unknown';
+            const hours = (exec.workflow?.humanSecondsSaved || 0) / 3600;
+            workflowHours[wfName] = (workflowHours[wfName] || 0) + hours;
+        });
+        const topWorkflow = Object.entries(workflowHours)
+            .sort((a, b) => b[1] - a[1])[0];
+        const topWorkflowName = topWorkflow ? topWorkflow[0] : null;
+        // Truncate long workflow names
+        const truncatedTopWorkflow = topWorkflowName
+            ? (topWorkflowName.length > 28 ? topWorkflowName.substring(0, 25) + '...' : topWorkflowName)
+            : 'No data';
+
+        // Avg $ per execution
+        const avgDollarPerExec = executionsForTasks.length > 0
+            ? (monetaryValue / executionsForTasks.length).toFixed(2)
+            : '0.00';
+
+        // Max single execution time saved (in minutes)
+        const maxMinutesSaved = executionsForTime.reduce((max, exec) => {
+            const mins = (exec.workflow?.humanSecondsSaved || 0) / 60;
+            return mins > max ? mins : max;
+        }, 0);
+
+        // Form submission stats
+        const formCounts = {};
+        executionsForTasks.forEach(exec => {
+            const triggerType = (exec.triggerInfo?.type || '').toLowerCase();
+            if (triggerType === 'form submission') {
+                const formName = exec.triggerInfo?.formName || exec.workflow?.name || 'Unknown Form';
+                formCounts[formName] = (formCounts[formName] || 0) + 1;
+            }
+        });
+
+        // What % of executions are form submissions
+        const formSubmissionPct = executionsForTasks.length > 0
+            ? ((formSubmissions / executionsForTasks.length) * 100).toFixed(1)
+            : '0';
+
+        // Forms used vs available
+        const formsWithSubmissions = Object.keys(formCounts).length;
+        const formsUnused = forms.length - formsWithSubmissions;
+        const formsUsedTrend = formsWithSubmissions > formsUnused ? 'up' : (formsUnused > formsWithSubmissions ? 'down' : 'neutral');
+
         let metricsAnimated = false;
 
         // Render Metric Cards
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Total Hours Saved',
-            subtitle: 'Last ' + DAYS_TO_FETCH + ' days (all types)',
+            subtitle: 'Last ' + DAYS_TO_FETCH + ' days (includes sub-workflows)',
             value: formatTimeSaved(totalHoursSaved * 3600),
             icon: 'schedule',
             color: 'teal',
             trend: 'up',
-            trendValue: '+12.3%',
+            trendValue: executionsForTime.length.toLocaleString() + ' executions',
             solidBackground: true
         }), '#metric-total-hours');
-        // Animate the value
 
         // Set flag after animations
-        window.hasInitiallyLoaded = true;
         window.hasInitiallyLoaded = true;
 
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Monetary Value',
-            subtitle: 'Total value at $50/hour',
+            subtitle: 'Total value at $50/hour (includes sub-workflows)',
             value: '$' + monetaryValue.toLocaleString('en-US', { maximumFractionDigits: 0 }),
             icon: 'attach_money',
             color: 'fandango',
             trend: 'up',
-            trendValue: '+$2,400 this month',
+            trendValue: '$' + avgDollarPerExec + '/exec avg',
             solidBackground: true
         }), '#metric-total-forms');
 
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Success Rate',
-            subtitle: 'Last ' + DAYS_TO_FETCH + ' days',
+            subtitle: 'Last ' + DAYS_TO_FETCH + ' days (root executions only)',
             value: successRate + '%',
             icon: 'check_circle',
             color: 'snooze',
@@ -113,12 +188,12 @@ function renderDashboard() {
 
         RewstDOM.place(RewstDOM.createMetricCard({
             title: 'Avg. Minutes/Execution',
-            subtitle: 'Per execution (' + DAYS_TO_FETCH + ' days)',
+            subtitle: 'Per root execution (' + DAYS_TO_FETCH + ' days)',
             value: avgMinutesSaved.toFixed(1),
             icon: 'trending_up',
             color: 'teal',
             trend: 'up',
-            trendValue: '+0.5 min',
+            trendValue: maxMinutesSaved > 0 ? 'Max: ' + maxMinutesSaved.toFixed(1) + ' min' : 'No data',
             cardClass: 'card card-accent-teal',
             solidBackground: false
         }), '#metric-avg-time-saved');
@@ -129,8 +204,8 @@ function renderDashboard() {
             value: formSubmissions,
             icon: 'edit_note',
             color: 'orange',
-            trend: 'up',
-            trendValue: '+8 this week',
+            trend: formSubmissions > 0 ? 'up' : 'neutral',
+            trendValue: formSubmissionPct + '% of executions',
             cardClass: 'card card-accent-orange',
             solidBackground: false
         }), '#metric-form-submissions');
@@ -141,8 +216,8 @@ function renderDashboard() {
             value: forms.length,
             icon: 'assignment',
             color: 'bask',
-            trend: 'neutral',
-            trendValue: 'Stable',
+            trend: formsUsedTrend,
+            trendValue: formsWithSubmissions + ' used, ' + formsUnused + ' unused',
             cardClass: 'card card-accent-bask',
             solidBackground: false
         }), '#metric-form-completion');
@@ -189,7 +264,7 @@ function renderDashboard() {
         // Prepare task usage data
         const topChartTaskUsageData = {};
 
-        filteredExecutions.forEach(exec => {
+        executionsForTasks.forEach(exec => {
             if (!exec.createdAt) return;
             const timestamp = parseInt(exec.createdAt, 10);
             if (isNaN(timestamp)) return;
@@ -218,7 +293,7 @@ function renderDashboard() {
             topChartTaskUsageData[a].sortKey - topChartTaskUsageData[b].sortKey
         );
 
-        const topChartAllTriggerTypes = [...new Set(filteredExecutions.map(e => e.triggerInfo?.type || 'Unknown'))];
+        const topChartAllTriggerTypes = [...new Set(executionsForTasks.map(e => e.triggerInfo?.type || 'Unknown'))];
 
         const topChartTriggerTypeColors = {
             'Form Submission': { border: RewstDOM.getColor('snooze'), bg: RewstDOM.getColorRgba('snooze', 0.1) },
@@ -549,11 +624,15 @@ function renderDashboard() {
             const taskTypeData = [];
             const taskTypeTotals = {};
 
-            filteredExecutions.forEach(exec => {
-                const triggerType = exec.triggerInfo?.type || 'Unknown';
-                const tasks = exec.numSuccessfulTasks || 0;
-                taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + tasks;
-            });
+            // Filter out sub-workflows to avoid double-counting tasks
+            // (parent's numSuccessfulTasks already includes sub-workflow tasks)
+            filteredExecutions
+                .filter(exec => !exec.parentExecutionId) // Only count root/parent executions
+                .forEach(exec => {
+                    const triggerType = exec.triggerInfo?.type || 'Unknown';
+                    const tasks = exec.numSuccessfulTasks || 0;
+                    taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + tasks;
+                });
 
             Object.entries(taskTypeTotals).forEach(([type, count]) => {
                 taskTypeData.push({ type, count });
@@ -660,8 +739,9 @@ function renderDashboard() {
         });
 
         // Top workflows table
+        // First pass: count ROOT executions (executionsForTasks) for accurate counts
         const workflowGroups = {};
-        filteredExecutions.forEach(exec => {
+        executionsForTasks.forEach(exec => {
             const wfName = exec.workflow?.name || 'Unknown Workflow';
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
             const hoursSaved = secondsSaved / 3600;
@@ -676,7 +756,7 @@ function renderDashboard() {
                     const execOrgId = exec.organization?.id;
                     const fallbackOrgId = execOrgId || window.selectedOrg?.id;
                     if (fallbackOrgId) {
-                        wfLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${wfId}`;
+                        wfLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/workflows/${wfId}`;
                         // Flag if using a different org than selected (might not be accessible)
                         if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
                             linkFromManagedOrg = true;
@@ -705,6 +785,21 @@ function renderDashboard() {
             } else if (exec.status === 'FAILED' || exec.status === 'failed') {
                 workflowGroups[wfName].failed++;
             }
+        });
+
+        // Second pass: Add hours saved from sub-workflows (executionsForTime includes ALL)
+        // Don't increment execution counts - those should only count root executions
+        const subWorkflows = executionsForTime.filter(e => e.parentExecutionId);
+        subWorkflows.forEach(exec => {
+            const wfName = exec.workflow?.name || 'Unknown Workflow';
+            const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
+            const hoursSaved = secondsSaved / 3600;
+
+            // If this workflow was already initialized by root executions, add its sub-workflow hours
+            if (workflowGroups[wfName]) {
+                workflowGroups[wfName].hours_saved += hoursSaved;
+            }
+            // Note: We don't create new entries for sub-only workflows, only add to existing workflows
         });
 
         const topWorkflows = Object.values(workflowGroups)
@@ -853,7 +948,7 @@ function renderDashboard() {
                 const execOrgId = exec.organization?.id;
                 const fallbackOrgId = execOrgId || window.selectedOrg?.id;
                 if (fallbackOrgId) {
-                    formLink = `https://app.rewst.io/organizations/${fallbackOrgId}/forms/${formId}`;
+                    formLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/forms/${formId}`;
                     if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
                         formLinkFromManagedOrg = true;
                     }
@@ -869,7 +964,7 @@ function renderDashboard() {
                 const execOrgId = exec.organization?.id;
                 const fallbackOrgId = execOrgId || window.selectedOrg?.id;
                 if (fallbackOrgId) {
-                    workflowLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${workflowId}`;
+                    workflowLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/workflows/${workflowId}`;
                     if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
                         workflowLinkFromManagedOrg = true;
                     }
@@ -999,38 +1094,27 @@ function renderDashboard() {
         RewstDOM.place(formSubmissionsTable, '#table-form-submissions');
 
         // Workflow execution summary table
+        // Process ALL executions (root + sub-workflows) - each gets its own row
         const executionGroups = {};
 
+        // Process all executions (includes both root and sub-workflows)
         filteredExecutions.forEach(exec => {
             const workflowId = exec.workflow?.id;
             const workflowName = exec.workflow?.name || 'Unknown Workflow';
             const triggerType = exec.triggerInfo?.type || 'Unknown';
             const workflowType = exec.workflow?.type || 'STANDARD';
             const groupKey = workflowName + '|' + triggerType;
+            const isSubWorkflow = !!exec.parentExecutionId;
 
             // Check if workflow exists in workflows list
             const workflowExists = workflowId ? workflows.find(w => w.id === workflowId) : null;
 
             if (!executionGroups[groupKey]) {
-                // Build workflow link with fallback if missing
-                let workflowLink = exec.workflow?.link;
-                let linkFromManagedOrg = false;
-                if (!workflowLink && workflowId) {
-                    const execOrgId = exec.organization?.id;
-                    const fallbackOrgId = execOrgId || window.selectedOrg?.id;
-                    if (fallbackOrgId) {
-                        workflowLink = `https://app.rewst.io/organizations/${fallbackOrgId}/workflows/${workflowId}`;
-                        if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
-                            linkFromManagedOrg = true;
-                        }
-                    }
-                }
-
                 executionGroups[groupKey] = {
                     workflow: workflowName,
                     workflow_id: workflowId || null,
-                    workflow_link: workflowLink,
-                    link_from_managed_org: linkFromManagedOrg,
+                    workflow_link: exec.workflow?.link || null,  // Use link from execution object
+                    link_from_managed_org: false,  // Could enhance this if needed
                     workflow_type: workflowType,
                     type: triggerType,
                     total_runs: 0,
@@ -1038,13 +1122,21 @@ function renderDashboard() {
                     failed: 0,
                     total_tasks: 0,
                     total_hours_saved: 0,
-                    workflow_missing: !workflowExists && !workflowId
+                    workflow_missing: !workflowExists && !workflowId,
+                    is_sub_workflow: isSubWorkflow  // Track if this group contains sub-workflows
                 };
             }
 
+            // Count all executions (root and sub show as separate rows with their own counts)
             executionGroups[groupKey].total_runs++;
-            executionGroups[groupKey].total_tasks += exec.tasksUsed || 0;
 
+            // For sub-workflows, don't add tasks (to avoid double-counting with parent)
+            // Only count tasks for root executions
+            if (!isSubWorkflow) {
+                executionGroups[groupKey].total_tasks += exec.tasksUsed || 0;
+            }
+
+            // Add hours for all executions (each has its own workflow's humanSecondsSaved)
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
             executionGroups[groupKey].total_hours_saved += secondsSaved / 3600;
 

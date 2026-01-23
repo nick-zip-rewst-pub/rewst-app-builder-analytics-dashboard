@@ -39,6 +39,15 @@
       animation: progressPulse 0.8s ease-in-out infinite;
     }
 
+    /* Slower pulse for sub-workflow loading - same as main but slower */
+    @keyframes progressPulseSlow {
+      0% { width: 15%; }
+      100% { width: 60%; }
+    }
+    .progress-pulse-slow {
+      animation: progressPulseSlow 1.8s ease-out infinite;
+    }
+
     /* Enriching pulse animation - slowly moves to 100% without looping */
     @keyframes enrichPulse {
       0% { width: 60%; }
@@ -128,6 +137,7 @@
     </div>
 
 
+
   <!-- Sidebar -->
   <div id="sidebar" class="sidebar fixed left-0 top-0 h-screen bg-white border-r border-gray-200 flex flex-col z-50">
     
@@ -175,9 +185,17 @@
           </a>
         </div>
       </div>
-      
+
     </nav>
-    
+
+    <!-- Load Sub-Workflows Button (Bottom of Sidebar) -->
+    <div id="load-sub-workflows-container" class="p-4 border-t border-gray-200 hidden">
+      <button id="load-sub-workflows-btn" class="flex items-center justify-center gap-2 w-full px-4 py-2 bg-rewst-teal hover:bg-rewst-teal-dark text-white rounded-md transition-colors duration-200 text-sm font-medium whitespace-nowrap">
+        <span class="material-icons text-lg">add_circle_outline</span>
+        <span class="nav-text">Load Sub-Workflows</span>
+      </button>
+    </div>
+
   </div>
       
       <!-- Advanced Filter Slide-Out -->
@@ -651,7 +669,7 @@
       // GLOBAL CONFIGURATION
       const DAYS_TO_FETCH = 30;
       const CACHE_VERSION = '1.5'; // Increment this to invalidate all caches - bumped for IndexedDB migration
-      const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+      const CACHE_DURATION = 5 * 24 * 60 * 60 * 1000; // 5 days in milliseconds
       const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
 
       // ============================================
@@ -924,6 +942,10 @@
         debugLog("✅ RewstApp initialized");
       } catch (error) {
         debugError("❌ Failed to initialize RewstApp:", error);
+        if (error.isSessionExpired) {
+          showSessionExpired(error.loginUrl);
+          return;
+        }
         RewstDOM.showError("Failed to initialize dashboard");
         return;
       }
@@ -1232,7 +1254,7 @@
 
       // Initialize advanced filters (call this after dashboard data is loaded)
 async function initializeAdvancedFilters() {
-  if (!window.dashboardData) return;
+  if (!window.dashboardData?.executions) return;
 
   // Check if containers exist
   const orgContainer = document.getElementById('org-filter-container');
@@ -1338,6 +1360,12 @@ async function initializeAdvancedFilters() {
         sidebar.classList.toggle('collapsed');
         mainContent.classList.toggle('sidebar-collapsed');
         toggleIcon.textContent = sidebar.classList.contains('collapsed') ? 'chevron_right' : 'chevron_left';
+
+        // Hide/show the load sub-workflows button when sidebar collapses
+        const subWorkflowContainer = document.getElementById('load-sub-workflows-container');
+        if (subWorkflowContainer && !subWorkflowContainer.classList.contains('hidden')) {
+          subWorkflowContainer.style.display = sidebar.classList.contains('collapsed') ? 'none' : '';
+        }
       });
 
       // Page navigation
@@ -1445,6 +1473,107 @@ async function initializeAdvancedFilters() {
         lastScrollTop = scrollTop;
       }, { passive: true });
 
+      // Load sub-workflows on demand
+      async function loadSubWorkflows() {
+        const container = document.getElementById('load-sub-workflows-container');
+
+        try {
+          debugLog('🔄 Loading sub-workflows on demand...');
+
+          // Hide button
+          if (container) container.classList.add('hidden');
+
+          // Get current org IDs from dashboard data
+          const orgIds = window.dashboardData?.orgIds || [];
+          const days = window.dashboardData?.days || DAYS_TO_FETCH;
+
+          // Create progress indicator with slower looping progress bar
+          const progressIndicator = document.createElement('div');
+          progressIndicator.id = 'sub-workflow-progress-indicator';
+          progressIndicator.className = 'fixed bottom-4 left-4 z-50 bg-gray-800 text-white px-4 py-3 rounded-lg shadow-lg';
+          progressIndicator.style.minWidth = '250px';
+          progressIndicator.innerHTML = `
+            <div class="flex items-center gap-2 mb-2">
+              <span class="animate-pulse text-rewst-teal">●</span>
+              <span>Loading sub-workflows...</span>
+            </div>
+            <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+              <div class="h-full bg-rewst-teal rounded-full progress-pulse-slow"></div>
+            </div>
+          `;
+          document.body.appendChild(progressIndicator);
+
+          // Fetch sub-workflows (pass scope in options)
+          const subExecutions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
+            timeout: 45000,
+            scope: 'subs'
+          });
+
+          debugLog(`✅ Loaded ${subExecutions.length} sub-workflow executions`);
+
+          // Merge sub-workflows into dashboard data
+          window.dashboardData.executions = [...window.dashboardData.executions, ...subExecutions];
+
+          // Update cache with combined data
+          await saveToCache(window.dashboardData, days);
+
+          // Show completion message
+          const indicator = document.getElementById('sub-workflow-progress-indicator');
+          if (indicator) {
+            indicator.innerHTML = `
+              <div class="flex items-center gap-2">
+                <span class="text-green-400">✓</span>
+                <span>+${subExecutions.length} sub-workflows loaded</span>
+              </div>
+            `;
+            setTimeout(() => indicator.remove(), 3000);
+          }
+
+          // Save current dropdown selections before re-render
+          const chartViewSelector = document.getElementById('chart-view-selector');
+          const doughnutViewSelector = document.getElementById('doughnut-view-selector');
+          const savedChartView = chartViewSelector?.value || 'executions';
+          const savedDoughnutView = doughnutViewSelector?.value || 'executions';
+
+          // Re-render current page with updated data
+          pages[currentPage].render();
+
+          // Restore dropdown selections and trigger correct chart renders
+          if (chartViewSelector && savedChartView !== 'executions') {
+            chartViewSelector.value = savedChartView;
+            chartViewSelector.dispatchEvent(new Event('change'));
+          }
+          if (doughnutViewSelector && savedDoughnutView !== 'executions') {
+            doughnutViewSelector.value = savedDoughnutView;
+            doughnutViewSelector.dispatchEvent(new Event('change'));
+          }
+
+          // Update advanced filters to include sub-workflow trigger types
+          initializeAdvancedFilters();
+
+          debugLog('✅ Sub-workflows merged and dashboard updated');
+
+        } catch (error) {
+          debugError('❌ Failed to load sub-workflows:', error);
+
+          // Remove progress indicator if it exists
+          const indicator = document.getElementById('sub-workflow-progress-indicator');
+          if (indicator) {
+            indicator.innerHTML = `
+              <div class="flex items-center gap-2">
+                <span class="text-red-400">✗</span>
+                <span>Failed to load sub-workflows</span>
+              </div>
+            `;
+            setTimeout(() => indicator.remove(), 3000);
+          }
+
+          // Show button again
+          if (container) container.classList.remove('hidden');
+
+          RewstDOM.showError('Failed to load sub-workflows: ' + error.message);
+        }
+      }
 
       // Load dashboard data
       async function loadDashboard(forceRefresh = false) {
@@ -1493,6 +1622,16 @@ async function initializeAdvancedFilters() {
               initializeAdvancedFilters()
               pages[currentPage].render();
 
+              // Show sub-workflow load button if no sub-workflows in cached data
+              // Check if any execution has parentExecutionId (indicating subs are loaded)
+              const hasSubWorkflows = cachedData.executions?.some(e => e.parentExecutionId);
+              if (!hasSubWorkflows) {
+                const subContainer = document.getElementById('load-sub-workflows-container');
+                if (subContainer) {
+                  subContainer.classList.remove('hidden');
+                }
+              }
+
               // Hide loading overlay
               hideLoadingOverlay();
               return;
@@ -1514,6 +1653,13 @@ async function initializeAdvancedFilters() {
 
         } catch (error) {
           debugError("❌ Failed to load dashboard:", error);
+
+          // Check for session expired error
+          if (error.isSessionExpired) {
+            showSessionExpired(error.loginUrl);
+            return;
+          }
+
           restoreButtons();
           const excludeTestToggle = document.getElementById('exclude-test-toggle');
           if (excludeTestToggle) excludeTestToggle.style.display = '';
@@ -1714,7 +1860,14 @@ async function initializeAdvancedFilters() {
           stopMorphAnimation();
         }
       }
-  
+
+      function showSessionExpired(loginUrl) {
+        // Hide loading overlay first
+        hideLoadingOverlay();
+        // Use RewstDOM to show the session expired overlay
+        RewstDOM.showSessionExpired(loginUrl);
+      }
+
       // ==========================================
 // LOGO LOADING ANIMATION WITH ANIME.JS
 // ==========================================
@@ -2217,6 +2370,11 @@ function stopMorphAnimation() {
           debugLog(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
           updateLoadingProgress(15, 'Fetching executions...', 'fetch'); // Start fetch pulse (15→60%)
 
+          // Workflow scope: 'parents' | 'subs' | 'both'
+          // Start with parents only for fast initial load (~15s)
+          // User can load sub-workflows on-demand via button (see bottom-left UI)
+          RewstApp.WORKFLOW_SCOPE = 'parents';
+
           // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
           const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
             timeout: 5000,
@@ -2234,7 +2392,7 @@ function stopMorphAnimation() {
           });
           debugLog(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
 
-          const freshData = { workflows, executions, forms, integrationConfigs };
+          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs };
 
           // Store globally
           window.dashboardData = freshData;
@@ -2254,6 +2412,14 @@ function stopMorphAnimation() {
 
           // Hide loading overlay after rendering
           hideLoadingOverlay();
+
+          // Show sub-workflow load button in sidebar (only if parent-only mode)
+          if (RewstApp.WORKFLOW_SCOPE === 'parents') {
+            const subContainer = document.getElementById('load-sub-workflows-container');
+            if (subContainer) {
+              subContainer.classList.remove('hidden');
+            }
+          }
 
           // Background retry for any failed trigger info fetches
           if (rewst._failedExecutionIds?.length > 0) {
@@ -2290,7 +2456,7 @@ function stopMorphAnimation() {
 
     // HELPER: Get filtered executions based on test run toggle and advanced filters
     function getFilteredExecutions() {
-      if (!window.dashboardData) return [];
+      if (!window.dashboardData?.executions) return [];
       let filtered = window.dashboardData.executions;
       
       // Test runs filter (existing logic)
@@ -2342,6 +2508,14 @@ function stopMorphAnimation() {
         await loadDashboard(true); // Force refresh = true
         RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
       });
+
+      // Sub-workflow load button event listener
+      const subWorkflowBtn = document.getElementById('load-sub-workflows-btn');
+      if (subWorkflowBtn) {
+        subWorkflowBtn.addEventListener('click', async () => {
+          await loadSubWorkflows();
+        });
+      }
 
       const toggleSwitch = document.getElementById('exclude-test-runs');
       const toggleDot = document.querySelector('.toggle-dot');

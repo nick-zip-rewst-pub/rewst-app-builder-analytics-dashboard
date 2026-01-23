@@ -1491,3 +1491,98 @@ tbody tr:nth-child(8) { animation-delay: 210ms; }
 tbody tr:nth-child(9) { animation-delay: 240ms; }
 tbody tr:nth-child(10) { animation-delay: 270ms; }
 /* Add more if you want more rows to stagger */
+
+/* ============================================
+   SESSION EXPIRED OVERLAY
+   ============================================ */
+
+.session-expired-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.session-expired-overlay.hidden {
+  display: none;
+}
+
+.session-expired-content {
+  text-align: center;
+  color: white;
+}
+
+.session-expired-content h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem 0;
+}
+
+.session-expired-content p {
+  margin-bottom: 1.5rem;
+  opacity: 0.9;
+}
+
+.session-expired-content a {
+  display: inline-block;
+  background: #00bbb4;
+  color: white;
+  padding: 0.75rem 2rem;
+  border-radius: 0.5rem;
+  text-decoration: none;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.session-expired-content a:hover {
+  background: #00928f;
+}
+
+/* Session expired logo fall animation */
+@keyframes session-fall-over {
+  0% {
+    transform: rotate(0deg);
+    filter: grayscale(0%);
+    opacity: 1;
+  }
+  20% {
+    transform: rotate(5deg);
+    filter: grayscale(0%);
+  }
+  40% {
+    transform: rotate(-8deg);
+    filter: grayscale(15%);
+  }
+  55% {
+    transform: rotate(3deg);
+    filter: grayscale(25%);
+  }
+  85% {
+    transform: rotate(-90deg);
+    filter: grayscale(100%);
+    opacity: 0.5;
+  }
+  100% {
+    transform: rotate(-90deg) translateX(-20px);
+    filter: grayscale(100%);
+    opacity: 0.5;
+  }
+}
+
+@keyframes session-gentle-rock {
+  0%, 100% {
+    transform: rotate(-90deg) translateX(-20px);
+  }
+  50% {
+    transform: rotate(-85deg) translateX(-20px);
+  }
+}
+
+.session-expired-logo {
+  animation: session-fall-over 2s ease-in-out forwards, session-gentle-rock 3s ease-in-out 2.2s infinite;
+}
