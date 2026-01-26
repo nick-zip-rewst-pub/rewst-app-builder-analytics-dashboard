@@ -512,11 +512,11 @@ function renderInsightSection(sectionName, insights) {
   const cardsHtml = insights.map(insight => {
     // Low activity items should open in new tab
     const isExternal = insight.type === 'no_executions' || insight.type === 'no_form_submissions';
-    
+
     // Get the correct link
     const link = insight.workflowLink || insight.formLink;
-    
-    const clickHandler = isExternal 
+
+    const clickHandler = isExternal
       ? `window.open('${link}', '_blank')`
       : `navigateToWorkflowDetail('${insight.workflowId}')`;
 

@@ -43,22 +43,19 @@ function renderWorkflowDetailsDashboard() {
     return;
   }
 
-  // Build combined workflows list from both workflows array AND execution data
-  // This ensures workflows from managed orgs appear in the dropdown
-  const workflowsFromApi = window.dashboardData.workflows || [];
+  // Build workflows list from executions ONLY - only show workflows that have been run
+  // This prevents showing 50+ workflows with no data to display
   const workflowMap = new Map();
+  const filteredExecs = getFilteredExecutions();
 
-  // Add workflows from API first
-  workflowsFromApi.forEach(w => {
-    workflowMap.set(w.id, w);
-  });
-
-  // Add workflows from executions (for managed org workflows not in API response)
-  if (window.dashboardData.executions) {
-    window.dashboardData.executions.forEach(exec => {
-      if (exec.workflow?.id && !workflowMap.has(exec.workflow.id)) {
+  // Only add workflows that have executions
+  filteredExecs.forEach(exec => {
+    if (exec.workflow?.id && exec.workflow?.name) {
+      // Use workflow NAME as key since same-named workflows across orgs should be grouped
+      const key = exec.workflow.name;
+      if (!workflowMap.has(key)) {
         const execOrgId = exec.organization?.id;
-        workflowMap.set(exec.workflow.id, {
+        workflowMap.set(key, {
           id: exec.workflow.id,
           name: exec.workflow.name,
           type: exec.workflow.type,
@@ -68,12 +65,15 @@ function renderWorkflowDetailsDashboard() {
           link: execOrgId ? `${rewst._getBaseUrl()}/organizations/${execOrgId}/workflows/${exec.workflow.id}` : null
         });
       }
-    });
-  }
+    }
+  });
 
   const workflows = Array.from(workflowMap.values()).sort((a, b) =>
     (a.name || '').localeCompare(b.name || '')
   );
+
+  // Track count for logging
+  const workflowsFromApi = window.dashboardData.workflows || [];
 
   // If already initialized and we have a selected workflow, just re-render it with new filters
   if (window.workflowSelectorInitialized) {
@@ -141,11 +141,13 @@ function renderSelectedWorkflow(workflow, executions) {
 
   document.getElementById("selected-workflow-link").href = workflowLink;
 
+  // Filter by workflow NAME (not ID) because same-named workflows across sub-orgs
+  // have different IDs but should be shown together when clicked from the table
   const workflowExecutions = executions.filter(
-    (e) => e.workflow?.id === workflow.id
+    (e) => e.workflow?.name === workflow.name
   );
 
-  console.log(`Found ${workflowExecutions.length} executions for workflow ID ${workflow.id}`);
+  console.log(`Found ${workflowExecutions.length} executions for workflow "${workflow.name}"`);
 
   renderWorkflowMetrics(workflowExecutions);
   renderWorkflowTimeline(workflowExecutions);

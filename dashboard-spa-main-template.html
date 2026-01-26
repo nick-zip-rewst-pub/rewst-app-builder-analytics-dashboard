@@ -2377,7 +2377,7 @@ function stopMorphAnimation() {
 
           // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
           const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
-            timeout: 5000,
+            timeout: 10000,
             onProgress: ({ phase, completed, total, status }) => {
               if (phase === 'batches' && total > 0) {
                 // Map batch progress to 15-85% of the bar (stop pulse, batches provide real progress)
@@ -2421,24 +2421,96 @@ function stopMorphAnimation() {
             }
           }
 
-          // Background retry for any failed trigger info fetches
-          if (rewst._failedExecutionIds?.length > 0) {
-            debugLog(`🔄 Retrying ${rewst._failedExecutionIds.length} failed trigger info fetches in background...`);
-            rewst.retryFailedTriggerInfo({ timeout: 20000 }).then(updated => {
-              if (updated && updated.length > 0) {
-                debugLog(`✅ Background retry recovered ${updated.length} executions`);
-                // Merge updated executions into dashboardData
-                const updatedIds = new Set(updated.map(e => e.id));
-                window.dashboardData.executions = window.dashboardData.executions.map(e =>
-                  updatedIds.has(e.id) ? updated.find(u => u.id === e.id) : e
-                );
-                // Re-render current page with updated data
+          // Background retry for failed trigger info AND failed org batches
+          const hasFailedTriggerInfo = rewst._failedExecutionIds?.length > 0;
+          const hasFailedOrgBatches = !!rewst._failedOrgBatchRetry;
+
+          if (hasFailedTriggerInfo || hasFailedOrgBatches) {
+            const failedCount = rewst._failedExecutionIds?.length || 0;
+            const failedOrgs = rewst._failedOrgBatchRetry?.orgIds?.length || 0;
+            debugLog(`🔄 Background retry: ${failedCount} trigger info, ${failedOrgs} org batches...`);
+
+            // Show progress indicator in bottom-left if we have failed orgs
+            let progressIndicator = null;
+            if (failedOrgs > 0) {
+              progressIndicator = document.createElement('div');
+              progressIndicator.id = 'retry-progress-indicator';
+              progressIndicator.className = 'fixed bottom-4 left-4 z-50 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2';
+              progressIndicator.innerHTML = `
+                <span class="animate-pulse text-rewst-teal">●</span>
+                <span id="retry-progress-text">Retrying: 0/${failedOrgs} orgs...</span>
+              `;
+              document.body.appendChild(progressIndicator);
+            }
+
+            rewst.retryFailedTriggerInfo({
+              timeout: 20000,           // 20s for trigger info
+              orgBatchTimeout: 30000,   // 30s for org batch retries
+              // Progress callback - updates indicator as orgs complete
+              onProgress: ({ completed, total }) => {
+                const textEl = document.getElementById('retry-progress-text');
+                if (textEl) {
+                  textEl.textContent = `Retrying: ${completed}/${total} orgs...`;
+                }
+              }
+            }).then(async result => {
+              let needsRerender = false;
+
+              // Handle recovered trigger info
+              if (result.retried?.length > 0) {
+                debugLog(`✅ Recovered ${result.retried.length} trigger info fetches`);
+                result.retried.forEach(({ executionId, triggerInfo }) => {
+                  const exec = window.dashboardData.executions.find(e => e.id === executionId);
+                  if (exec) {
+                    exec.triggerInfo = triggerInfo;
+                    exec._needsRetry = false;
+                    delete exec.error;
+                  }
+                });
+                needsRerender = true;
+              }
+
+              // Handle recovered org batch executions
+              if (result.recoveredExecutions?.length > 0) {
+                debugLog(`✅ Recovered ${result.recoveredExecutions.length} executions from failed org batches`);
+                needsRerender = true;
+              }
+
+              // Handle enriched form submissions
+              if (result.enriched?.length > 0) {
+                debugLog(`✅ Enriched ${result.enriched.length} form submissions with input data`);
+                needsRerender = true;
+              }
+
+              // Remove progress indicator and show completion
+              const indicator = document.getElementById('retry-progress-indicator');
+              if (indicator) {
+                const recovered = result.recoveredExecutions?.length || 0;
+                const skipped = rewst._abandonedOrgs?.length || 0;
+                if (recovered > 0 || skipped > 0) {
+                  // Show brief completion message before fading
+                  let msg = '';
+                  if (recovered > 0) msg += `+${recovered} recovered`;
+                  if (skipped > 0) msg += (msg ? ', ' : '') + `${skipped} skipped`;
+                  indicator.innerHTML = `
+                    <span class="text-green-400">✓</span>
+                    <span>${msg}</span>
+                  `;
+                  setTimeout(() => indicator.remove(), 3000);
+                } else {
+                  indicator.remove();
+                }
+              }
+
+              if (needsRerender && pages[currentPage]) {
                 pages[currentPage].render();
-                // Update cache with new data
-                saveToCache(window.dashboardData, days);
+                await saveToCache(window.dashboardData, days);
               }
             }).catch(err => {
               debugWarn('⚠️ Background retry failed:', err);
+              // Remove indicator on error
+              const indicator = document.getElementById('retry-progress-indicator');
+              if (indicator) indicator.remove();
             });
           }
 

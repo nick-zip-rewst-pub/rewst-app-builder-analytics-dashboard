@@ -1890,22 +1890,17 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
   }
 
   const totalBatches = batches.length;
-  const earlyReturnThreshold = Math.ceil(totalBatches * 0.8); // Return when 80% done (only if we have data)
-  const maxWaitMs = 30000; // Max 30s before returning with what we have
+  const maxWaitMs = 120000; // Max 2 min before returning with what we have
 
   // Use standard timeout for initial parallel batches - faster initial render
   // Failed orgs will be retried in background with longer timeouts
   const batchOptions = { ...options, timeout: options.timeout || 10000 };
 
-  this._log(`Fetching ${orgIds.length} orgs in ${totalBatches} batches (return early at ${earlyReturnThreshold}/${totalBatches} with data, or ${maxWaitMs/1000}s max, ${batchOptions.timeout/1000}s per-batch timeout)`);
+  this._log(`Fetching ${orgIds.length} orgs in ${totalBatches} batches (${maxWaitMs/1000}s max wait, ${batchOptions.timeout/1000}s per-batch timeout)`);
 
   const batchStartTime = Date.now();
   const completedResults = [];
   const pendingBatches = new Map(); // Track which batches are still running
-  let resolveEarly = null;
-
-  // Promise that resolves when we can return early
-  const earlyReturnPromise = new Promise(resolve => { resolveEarly = resolve; });
 
   // Fire off all batches with small stagger to avoid hammering API
   const batchPromises = batches.map((batchOrgIds, index) => {
@@ -1924,14 +1919,6 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
             pendingBatches.delete(batchNum);
             completedResults.push({ results, batchIndex: batchNum, elapsed: parseFloat(elapsed), success: true });
             this._log(`✅ Batch ${batchNum} done in ${elapsed}s: ${results.length} execs (${completedResults.length}/${totalBatches})`);
-
-            // Check if we can return early - but ONLY if we have some executions
-            // This prevents returning early with 0 results while the batch with all data is still loading
-            const totalExecsSoFar = completedResults.reduce((sum, b) => sum + b.results.length, 0);
-            if (completedResults.length >= earlyReturnThreshold && totalExecsSoFar > 0 && resolveEarly) {
-              resolveEarly();
-              resolveEarly = null;
-            }
             return { results, batchIndex: batchNum, success: true };
           })
           .catch(error => {
@@ -1939,31 +1926,18 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
             pendingBatches.delete(batchNum);
             completedResults.push({ results: [], batchIndex: batchNum, elapsed: parseFloat(elapsed), success: false, failedOrgIds: batchOrgIds });
             this._error(`❌ Batch ${batchNum} FAILED after ${elapsed}s (${batchOrgIds.length} orgs)`, error);
-
-            // Don't trigger early return on failures - wait for batches that might have data
             return { results: [], batchIndex: batchNum, success: false, failedOrgIds: batchOrgIds };
           });
       });
   });
 
-  // Wait for either: early return threshold OR timeout OR all complete
+  // Wait for all batches OR timeout (whichever comes first)
   const timeoutPromise = new Promise(resolve => setTimeout(() => {
-    if (resolveEarly) {
-      this._log(`⏱️ Max wait ${maxWaitMs/1000}s reached, returning with ${completedResults.length}/${totalBatches} batches`);
-      resolveEarly = null;
-      resolve();
-    }
+    this._log(`⏱️ Max wait ${maxWaitMs/1000}s reached, returning with ${completedResults.length}/${totalBatches} batches`);
+    resolve();
   }, maxWaitMs));
 
-  const allDonePromise = Promise.all(batchPromises).then(() => {
-    if (resolveEarly) {
-      resolveEarly();
-      resolveEarly = null;
-    }
-  });
-
-  // Wait for first of: early threshold, timeout, or all done
-  await Promise.race([earlyReturnPromise, timeoutPromise, allDonePromise]);
+  await Promise.race([Promise.all(batchPromises), timeoutPromise]);
 
   const totalElapsed = ((Date.now() - batchStartTime) / 1000).toFixed(1);
 
@@ -2545,18 +2519,33 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
  * @returns {Promise<Array>} Array of executions for this chunk
  */
 async _fetchExecutionsChunk(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
-  // Use sliding window for small org counts (≤10) to avoid batch timeouts with sub-workflows
-  if (orgIds && orgIds.length > 1 && orgIds.length <= RewstApp.ORG_SLIDING_THRESHOLD) {
+  // Single org - just run it
+  if (!orgIds || orgIds.length <= 1) {
+    return await this._fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
+  // HYBRID APPROACH: First 50 orgs use sliding window (guaranteed complete, parent included)
+  // Remaining orgs use batching (with early return for mega-MSP cases)
+  const PRIORITY_ORG_COUNT = 50;
+
+  if (orgIds.length <= PRIORITY_ORG_COUNT) {
+    // All orgs fit in priority window - use sliding window for all
     return await this._fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
   }
 
-  // If too many orgs, batch into parallel queries
-  if (orgIds && orgIds.length > RewstApp.ORG_BATCH_SIZE) {
-    return await this._fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
-  }
+  // Split: first 50 sliding window, rest batched
+  const priorityOrgs = orgIds.slice(0, PRIORITY_ORG_COUNT);
+  const remainingOrgs = orgIds.slice(PRIORITY_ORG_COUNT);
 
-  // Otherwise, run single query
-  return await this._fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  this._log(`🔀 Hybrid fetch: ${priorityOrgs.length} priority orgs (sliding) + ${remainingOrgs.length} remaining orgs (batched)`);
+
+  // Priority orgs - sliding window, guaranteed complete
+  const priorityResults = await this._fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, priorityOrgs, options);
+
+  // Remaining orgs - batched (can early return on timeout for huge counts)
+  const remainingResults = await this._fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, remainingOrgs, options);
+
+  return [...priorityResults, ...remainingResults];
 }
 
 /**
@@ -2733,18 +2722,33 @@ async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowI
  * @private
  */
 async _fetchExecutionsChunkLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds = null, options = {}) {
-  // Use sliding window for small org counts (≤10)
-  if (orgIds && orgIds.length > 1 && orgIds.length <= RewstApp.ORG_SLIDING_THRESHOLD) {
+  // Single org - just run it
+  if (!orgIds || orgIds.length <= 1) {
+    return await this._fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  }
+
+  // HYBRID APPROACH: First 50 orgs use sliding window (guaranteed complete, parent included)
+  // Remaining orgs use batching (with early return for mega-MSP cases)
+  const PRIORITY_ORG_COUNT = 50;
+
+  if (orgIds.length <= PRIORITY_ORG_COUNT) {
+    // All orgs fit in priority window - use sliding window for all
     return await this._fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
   }
 
-  // If too many orgs, batch into parallel queries
-  if (orgIds && orgIds.length > RewstApp.ORG_BATCH_SIZE) {
-    return await this._fetchExecutionsMultiOrgLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
-  }
+  // Split: first 50 sliding window, rest batched
+  const priorityOrgs = orgIds.slice(0, PRIORITY_ORG_COUNT);
+  const remainingOrgs = orgIds.slice(PRIORITY_ORG_COUNT);
 
-  // Otherwise, run single lightweight query
-  return await this._fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
+  this._log(`🔀 Hybrid fetch (lightweight): ${priorityOrgs.length} priority orgs (sliding) + ${remainingOrgs.length} remaining orgs (batched)`);
+
+  // Priority orgs - sliding window, guaranteed complete
+  const priorityResults = await this._fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, priorityOrgs, options);
+
+  // Remaining orgs - batched (can early return on timeout for huge counts)
+  const remainingResults = await this._fetchExecutionsMultiOrgLightweight(daysAgoStart, daysAgoEnd, workflowId, remainingOrgs, options);
+
+  return [...priorityResults, ...remainingResults];
 }
 
 /**
@@ -3115,8 +3119,15 @@ _buildExecutionLink(executionId, orgId = null) {
         limit: 1000
       });
 
-      this._log(`Retrieved ${result.workflows?.length || 0} workflow(s)`);
-      return result.workflows || [];
+      const workflows = result.workflows || [];
+
+      // Add link to each workflow
+      workflows.forEach(wf => {
+        wf.link = this._buildWorkflowLink(wf.id, wf.orgId || this.orgId);
+      });
+
+      this._log(`Retrieved ${workflows.length} workflow(s)`);
+      return workflows;
 
     } catch (error) {
       this._error('Failed to get workflows', error);
@@ -3178,11 +3189,12 @@ _buildExecutionLink(executionId, orgId = null) {
 
       const forms = result.forms || [];
 
-      // Sort fields by index for each form
+      // Sort fields by index and add link for each form
       forms.forEach(form => {
         if (form.fields && form.fields.length > 0) {
           form.fields.sort((a, b) => (a.index || 0) - (b.index || 0));
         }
+        form.link = this._buildFormLink(form.id);
       });
 
       this._log(`Retrieved ${forms.length} form(s)`);
