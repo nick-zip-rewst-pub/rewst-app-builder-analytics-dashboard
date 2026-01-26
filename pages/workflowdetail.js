@@ -135,8 +135,9 @@ function renderSelectedWorkflow(workflow, executions) {
   document.getElementById("selected-workflow-name").textContent = workflow.name;
 
   // Build workflow link with organization ID (per REWST_LINK_PATTERNS.md)
+  // Priority: workflow.link > workflow.orgId > selectedOrg.id > rewst.orgId
   const baseUrl = rewst._getBaseUrl(); // Returns https://app.rewst.io or configured URL
-  const orgId = window.selectedOrg?.id || rewst.orgId;
+  const orgId = workflow.orgId || window.selectedOrg?.id || rewst.orgId;
   const workflowLink = workflow.link || (orgId ? `${baseUrl}/organizations/${orgId}/workflows/${workflow.id}` : null);
 
   document.getElementById("selected-workflow-link").href = workflowLink;

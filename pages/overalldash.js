@@ -958,14 +958,17 @@ function renderDashboard() {
             const workflowName = exec.workflow?.name || 'Unknown Workflow';
             const workflowId = exec.workflow?.id;
             // Build workflow link with fallback if missing
+            // Priority: workflow.link > workflow.orgId > execution.organization.id > selectedOrg.id
             let workflowLink = exec.workflow?.link;
             let workflowLinkFromManagedOrg = false;
             if (!workflowLink && workflowId) {
+                const workflowOrgId = exec.workflow?.orgId;
                 const execOrgId = exec.organization?.id;
-                const fallbackOrgId = execOrgId || window.selectedOrg?.id;
+                const fallbackOrgId = workflowOrgId || execOrgId || window.selectedOrg?.id;
                 if (fallbackOrgId) {
                     workflowLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/workflows/${workflowId}`;
-                    if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
+                    // Mark as from managed org if workflow org differs from selected org
+                    if (workflowOrgId && window.selectedOrg?.id && workflowOrgId !== window.selectedOrg.id) {
                         workflowLinkFromManagedOrg = true;
                     }
                 }

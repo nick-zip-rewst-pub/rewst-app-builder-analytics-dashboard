@@ -377,13 +377,22 @@ function generateInsights(workflows, executions, forms) {
   // 💜 LOW ACTIVITY: Workflows with no executions (limit to 5)
   const executedWorkflowIds = new Set(Object.keys(workflowStats));
   const unusedWorkflows = [];
+
+  // Extract base URL from an existing execution link (most reliable source)
+  const sampleLink = executions.find(e => e.workflow?.link)?.workflow?.link;
+  const baseUrl = sampleLink
+    ? sampleLink.match(/^(https?:\/\/[^/]+)/)?.[1] || rewst._getBaseUrl()
+    : rewst._getBaseUrl();
+
   workflows.forEach(wf => {
     if (!executedWorkflowIds.has(wf.id)) {
+      // Build link from workflow ID if not already present
+      const link = wf.link || `${baseUrl}/organizations/${wf.orgId || rewst.orgId}/workflows/${wf.id}`;
       unusedWorkflows.push({
         type: 'no_executions',
         workflowId: wf.id,
         workflowName: wf.name,
-        workflowLink: wf.link,
+        workflowLink: link,
         title: `${wf.name} has no executions`,
         description: `No executions in the selected date range`,
         severity: 'low'
@@ -402,11 +411,13 @@ function generateInsights(workflows, executions, forms) {
   const unusedForms = [];
   forms.forEach(form => {
     if (!submittedFormIds.has(form.id)) {
+      // Build link from form ID if not already present (baseUrl already extracted above)
+      const link = form.link || `${baseUrl}/organizations/${rewst.orgId}/forms/${form.id}`;
       unusedForms.push({
         type: 'no_form_submissions',
         formId: form.id,
         formName: form.name,
-        formLink: form.link,
+        formLink: link,
         title: `${form.name} has no submissions`,
         description: `No form submissions in the selected date range`,
         severity: 'low'

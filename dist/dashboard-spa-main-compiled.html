@@ -5078,7 +5078,7 @@ async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowI
       // Fetch all workflows with their triggers
       const workflows = await this.getAllWorkflows();
 
-      // Build trigger lookup map: triggerId -> { trigger data + workflowId + workflowName }
+      // Build trigger lookup map: triggerId -> { trigger data + workflowId + workflowName + workflowOrgId }
       this._triggerCache = new Map();
       workflows.forEach(workflow => {
         if (workflow.triggers) {
@@ -5087,7 +5087,8 @@ async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowI
               ...trigger,
               workflowId: workflow.id,
               workflowName: workflow.name,
-              workflowType: workflow.type
+              workflowType: workflow.type,
+              workflowOrgId: workflow.orgId
             });
           });
         }
@@ -5133,10 +5134,48 @@ _shouldSkipContextFetch(workflow) {
 
  /**
    * Internal: Get base URL for links
-   * Returns configured/discovered URL, falls back to default
+   * Detects region from rew.st App Platform subdomain and returns correct app URL
+   * Works both in iframe (ancestorOrigins) and standalone (location.origin)
    */
  _getBaseUrl() {
-  return this._baseUrl || REWST_DEFAULTS.BASE_URL;
+  if (this._baseUrl) return this._baseUrl;
+
+  if (typeof window !== 'undefined') {
+    // Check ancestor origins first (when running in iframe on App Platform)
+    // Then fall back to current location origin
+    const origin = window.location.ancestorOrigins?.[0] || window.location.origin;
+
+    // Extract region from rew.st subdomain pattern: *.{region}.rew.st
+    // Examples: pedroaviary-zipse-graphql-libs.asia.rew.st -> asia
+    //           tlit60510-nick-strategist-example.rew.st -> (no region, US)
+    //           pedroaviary-app-ops-analytics.eu.rew.st -> eu
+    //           pedroaviary-zipse-test-apps.uk.rew.st -> uk
+    const regionMatch = origin.match(/\.([a-z]+)\.rew\.st/i);
+
+    if (regionMatch) {
+      const region = regionMatch[1].toLowerCase();
+      // Map region codes to app base URLs
+      const regionMap = {
+        'asia': 'https://app.rewst.asia',
+        'uk': 'https://app.eu.rewst.io',    // UK uses EU app URL
+        'eu': 'https://app.rewst.eu'
+      };
+      if (regionMap[region]) {
+        this._baseUrl = regionMap[region];
+        this._log('Detected region from rew.st subdomain:', region, '->', this._baseUrl);
+        return this._baseUrl;
+      }
+    }
+
+    // Check if it's rew.st without a region prefix (US)
+    if (origin.includes('.rew.st')) {
+      this._baseUrl = 'https://app.rewst.io';
+      this._log('Detected US region (no subdomain prefix):', this._baseUrl);
+      return this._baseUrl;
+    }
+  }
+
+  return REWST_DEFAULTS.BASE_URL;
 }
 
 /**
@@ -5242,19 +5281,19 @@ _buildExecutionLink(executionId, orgId = null) {
         const cachedTrigger = this._triggerCache.get(triggerInfo.triggerId);
 
         if (cachedTrigger) {
-          // Add form information if trigger has a formId
+          // Add form information if trigger has a formId - use workflow's orgId since form belongs to same org
           if (cachedTrigger.formId && this._formCache) {
             const form = this._formCache.get(cachedTrigger.formId);
             if (form) {
               triggerInfo.formId = cachedTrigger.formId;
               triggerInfo.formName = form.name;
-              triggerInfo.formLink = this._buildFormLink(cachedTrigger.formId);
+              triggerInfo.formLink = this._buildFormLink(cachedTrigger.formId, cachedTrigger.workflowOrgId);
             }
           }
 
-          // Add workflow link
+          // Add workflow link - use workflow's orgId
           if (cachedTrigger.workflowId) {
-            triggerInfo.workflowLink = this._buildWorkflowLink(cachedTrigger.workflowId);
+            triggerInfo.workflowLink = this._buildWorkflowLink(cachedTrigger.workflowId, cachedTrigger.workflowOrgId);
           }
         }
       }
@@ -5864,8 +5903,8 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
     const conductorInput = execution.conductor?.input || {};
     const inferred = this._inferTriggerTypeFromInput(conductorInput);
     
-    // Build links - use execution's org, not logged-in user's org
-    const workflowLink = this._buildWorkflowLink(execution.workflow?.id, execution.organization?.id);
+    // Build links - use workflow's orgId (where it lives), fallback to execution's org
+    const workflowLink = this._buildWorkflowLink(execution.workflow?.id, execution.workflow?.orgId || execution.organization?.id);
     const executionLink = this._buildExecutionLink(execution.id, execution.organization?.id);
     
     // Get organization from execution (already fetched!)
@@ -13373,14 +13412,17 @@ function renderDashboard() {
             const workflowName = exec.workflow?.name || 'Unknown Workflow';
             const workflowId = exec.workflow?.id;
             // Build workflow link with fallback if missing
+            // Priority: workflow.link > workflow.orgId > execution.organization.id > selectedOrg.id
             let workflowLink = exec.workflow?.link;
             let workflowLinkFromManagedOrg = false;
             if (!workflowLink && workflowId) {
+                const workflowOrgId = exec.workflow?.orgId;
                 const execOrgId = exec.organization?.id;
-                const fallbackOrgId = execOrgId || window.selectedOrg?.id;
+                const fallbackOrgId = workflowOrgId || execOrgId || window.selectedOrg?.id;
                 if (fallbackOrgId) {
                     workflowLink = `${rewst._getBaseUrl()}/organizations/${fallbackOrgId}/workflows/${workflowId}`;
-                    if (execOrgId && window.selectedOrg?.id && execOrgId !== window.selectedOrg.id) {
+                    // Mark as from managed org if workflow org differs from selected org
+                    if (workflowOrgId && window.selectedOrg?.id && workflowOrgId !== window.selectedOrg.id) {
                         workflowLinkFromManagedOrg = true;
                     }
                 }
@@ -13792,8 +13834,9 @@ function renderSelectedWorkflow(workflow, executions) {
   document.getElementById("selected-workflow-name").textContent = workflow.name;
 
   // Build workflow link with organization ID (per REWST_LINK_PATTERNS.md)
+  // Priority: workflow.link > workflow.orgId > selectedOrg.id > rewst.orgId
   const baseUrl = rewst._getBaseUrl(); // Returns https://app.rewst.io or configured URL
-  const orgId = window.selectedOrg?.id || rewst.orgId;
+  const orgId = workflow.orgId || window.selectedOrg?.id || rewst.orgId;
   const workflowLink = workflow.link || (orgId ? `${baseUrl}/organizations/${orgId}/workflows/${workflow.id}` : null);
 
   document.getElementById("selected-workflow-link").href = workflowLink;
@@ -15747,13 +15790,22 @@ function generateInsights(workflows, executions, forms) {
   // 💜 LOW ACTIVITY: Workflows with no executions (limit to 5)
   const executedWorkflowIds = new Set(Object.keys(workflowStats));
   const unusedWorkflows = [];
+
+  // Extract base URL from an existing execution link (most reliable source)
+  const sampleLink = executions.find(e => e.workflow?.link)?.workflow?.link;
+  const baseUrl = sampleLink
+    ? sampleLink.match(/^(https?:\/\/[^/]+)/)?.[1] || rewst._getBaseUrl()
+    : rewst._getBaseUrl();
+
   workflows.forEach(wf => {
     if (!executedWorkflowIds.has(wf.id)) {
+      // Build link from workflow ID if not already present
+      const link = wf.link || `${baseUrl}/organizations/${wf.orgId || rewst.orgId}/workflows/${wf.id}`;
       unusedWorkflows.push({
         type: 'no_executions',
         workflowId: wf.id,
         workflowName: wf.name,
-        workflowLink: wf.link,
+        workflowLink: link,
         title: `${wf.name} has no executions`,
         description: `No executions in the selected date range`,
         severity: 'low'
@@ -15772,11 +15824,13 @@ function generateInsights(workflows, executions, forms) {
   const unusedForms = [];
   forms.forEach(form => {
     if (!submittedFormIds.has(form.id)) {
+      // Build link from form ID if not already present (baseUrl already extracted above)
+      const link = form.link || `${baseUrl}/organizations/${rewst.orgId}/forms/${form.id}`;
       unusedForms.push({
         type: 'no_form_submissions',
         formId: form.id,
         formName: form.name,
-        formLink: form.link,
+        formLink: link,
         title: `${form.name} has no submissions`,
         description: `No form submissions in the selected date range`,
         severity: 'low'

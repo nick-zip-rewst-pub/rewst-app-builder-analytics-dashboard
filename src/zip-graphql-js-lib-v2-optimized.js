@@ -2833,7 +2833,7 @@ async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowI
       // Fetch all workflows with their triggers
       const workflows = await this.getAllWorkflows();
 
-      // Build trigger lookup map: triggerId -> { trigger data + workflowId + workflowName }
+      // Build trigger lookup map: triggerId -> { trigger data + workflowId + workflowName + workflowOrgId }
       this._triggerCache = new Map();
       workflows.forEach(workflow => {
         if (workflow.triggers) {
@@ -2842,7 +2842,8 @@ async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowI
               ...trigger,
               workflowId: workflow.id,
               workflowName: workflow.name,
-              workflowType: workflow.type
+              workflowType: workflow.type,
+              workflowOrgId: workflow.orgId
             });
           });
         }
@@ -2888,10 +2889,48 @@ _shouldSkipContextFetch(workflow) {
 
  /**
    * Internal: Get base URL for links
-   * Returns configured/discovered URL, falls back to default
+   * Detects region from rew.st App Platform subdomain and returns correct app URL
+   * Works both in iframe (ancestorOrigins) and standalone (location.origin)
    */
  _getBaseUrl() {
-  return this._baseUrl || REWST_DEFAULTS.BASE_URL;
+  if (this._baseUrl) return this._baseUrl;
+
+  if (typeof window !== 'undefined') {
+    // Check ancestor origins first (when running in iframe on App Platform)
+    // Then fall back to current location origin
+    const origin = window.location.ancestorOrigins?.[0] || window.location.origin;
+
+    // Extract region from rew.st subdomain pattern: *.{region}.rew.st
+    // Examples: pedroaviary-zipse-graphql-libs.asia.rew.st -> asia
+    //           tlit60510-nick-strategist-example.rew.st -> (no region, US)
+    //           pedroaviary-app-ops-analytics.eu.rew.st -> eu
+    //           pedroaviary-zipse-test-apps.uk.rew.st -> uk
+    const regionMatch = origin.match(/\.([a-z]+)\.rew\.st/i);
+
+    if (regionMatch) {
+      const region = regionMatch[1].toLowerCase();
+      // Map region codes to app base URLs
+      const regionMap = {
+        'asia': 'https://app.rewst.asia',
+        'uk': 'https://app.eu.rewst.io',    // UK uses EU app URL
+        'eu': 'https://app.rewst.eu'
+      };
+      if (regionMap[region]) {
+        this._baseUrl = regionMap[region];
+        this._log('Detected region from rew.st subdomain:', region, '->', this._baseUrl);
+        return this._baseUrl;
+      }
+    }
+
+    // Check if it's rew.st without a region prefix (US)
+    if (origin.includes('.rew.st')) {
+      this._baseUrl = 'https://app.rewst.io';
+      this._log('Detected US region (no subdomain prefix):', this._baseUrl);
+      return this._baseUrl;
+    }
+  }
+
+  return REWST_DEFAULTS.BASE_URL;
 }
 
 /**
@@ -2997,19 +3036,19 @@ _buildExecutionLink(executionId, orgId = null) {
         const cachedTrigger = this._triggerCache.get(triggerInfo.triggerId);
 
         if (cachedTrigger) {
-          // Add form information if trigger has a formId
+          // Add form information if trigger has a formId - use workflow's orgId since form belongs to same org
           if (cachedTrigger.formId && this._formCache) {
             const form = this._formCache.get(cachedTrigger.formId);
             if (form) {
               triggerInfo.formId = cachedTrigger.formId;
               triggerInfo.formName = form.name;
-              triggerInfo.formLink = this._buildFormLink(cachedTrigger.formId);
+              triggerInfo.formLink = this._buildFormLink(cachedTrigger.formId, cachedTrigger.workflowOrgId);
             }
           }
 
-          // Add workflow link
+          // Add workflow link - use workflow's orgId
           if (cachedTrigger.workflowId) {
-            triggerInfo.workflowLink = this._buildWorkflowLink(cachedTrigger.workflowId);
+            triggerInfo.workflowLink = this._buildWorkflowLink(cachedTrigger.workflowId, cachedTrigger.workflowOrgId);
           }
         }
       }
@@ -3619,8 +3658,8 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
     const conductorInput = execution.conductor?.input || {};
     const inferred = this._inferTriggerTypeFromInput(conductorInput);
     
-    // Build links - use execution's org, not logged-in user's org
-    const workflowLink = this._buildWorkflowLink(execution.workflow?.id, execution.organization?.id);
+    // Build links - use workflow's orgId (where it lives), fallback to execution's org
+    const workflowLink = this._buildWorkflowLink(execution.workflow?.id, execution.workflow?.orgId || execution.organization?.id);
     const executionLink = this._buildExecutionLink(execution.id, execution.organization?.id);
     
     // Get organization from execution (already fetched!)
