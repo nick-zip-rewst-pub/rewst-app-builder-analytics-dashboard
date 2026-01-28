@@ -1830,7 +1830,11 @@ async function initializeAdvancedFilters() {
         document.getElementById('refresh-dashboard').addEventListener('click', async () => {
           debugLog('🔄 Manual refresh triggered');
           await loadDashboard(true);
-          RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+          // Only show success if no background processing needed
+          const hasBackgroundWork = rewst._failedOrgBatchRetry?.orgIds?.length > 0 || rewst._failedExecutionIds?.length > 0;
+          if (!hasBackgroundWork) {
+            RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+          }
         });
         
         document.getElementById('open-filter-drawer').addEventListener('click', () => {
@@ -2428,17 +2432,28 @@ function stopMorphAnimation() {
           if (hasFailedTriggerInfo || hasFailedOrgBatches) {
             const failedCount = rewst._failedExecutionIds?.length || 0;
             const failedOrgs = rewst._failedOrgBatchRetry?.orgIds?.length || 0;
-            debugLog(`🔄 Background retry: ${failedCount} trigger info, ${failedOrgs} org batches...`);
+            debugLog(`🔄 Background continue: ${failedCount} trigger info, ${failedOrgs} org batches...`);
 
-            // Show progress indicator in bottom-left if we have failed orgs
+            // Show info toast when we have partial data and need to continue in background
+            if (failedOrgs > 0) {
+              RewstDOM.showInfo('Processing remaining data in background');
+            }
+
+            // Show progress indicator in bottom-left if we have orgs to continue
             let progressIndicator = null;
             if (failedOrgs > 0) {
               progressIndicator = document.createElement('div');
               progressIndicator.id = 'retry-progress-indicator';
-              progressIndicator.className = 'fixed bottom-4 left-4 z-50 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2';
+              progressIndicator.className = 'fixed bottom-4 left-4 z-50 bg-gray-800 text-white px-4 py-3 rounded-lg shadow-lg';
+              progressIndicator.style.minWidth = '250px';
               progressIndicator.innerHTML = `
-                <span class="animate-pulse text-rewst-teal">●</span>
-                <span id="retry-progress-text">Retrying: 0/${failedOrgs} orgs...</span>
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="animate-pulse text-rewst-teal">●</span>
+                  <span id="retry-progress-text">Continuing: 1/${failedOrgs} orgs</span>
+                </div>
+                <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                  <div class="h-full bg-rewst-teal rounded-full progress-pulse-slow"></div>
+                </div>
               `;
               document.body.appendChild(progressIndicator);
             }
@@ -2450,7 +2465,7 @@ function stopMorphAnimation() {
               onProgress: ({ completed, total }) => {
                 const textEl = document.getElementById('retry-progress-text');
                 if (textEl) {
-                  textEl.textContent = `Retrying: ${completed}/${total} orgs...`;
+                  textEl.textContent = `Continuing: ${completed}/${total} orgs`;
                 }
               }
             }).then(async result => {
@@ -2578,7 +2593,11 @@ function stopMorphAnimation() {
       document.getElementById('refresh-dashboard').addEventListener('click', async () => {
         debugLog('🔄 Manual refresh triggered');
         await loadDashboard(true); // Force refresh = true
-        RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+        // Only show success if no background processing needed
+        const hasBackgroundWork = rewst._failedOrgBatchRetry?.orgIds?.length > 0 || rewst._failedExecutionIds?.length > 0;
+        if (!hasBackgroundWork) {
+          RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+        }
       });
 
       // Sub-workflow load button event listener

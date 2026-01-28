@@ -3555,6 +3555,7 @@ class RewstApp {
   static ORG_BATCH_SIZE = 5;
   static ORG_SLIDING_THRESHOLD = 10;  // Use sliding window if ≤10 orgs
   static ORG_WINDOW_SIZE = 3;         // Process 3 orgs at a time (staggered parallel)
+  static MAX_SLIDING_WINDOW_MS = 60000; // Max time for sliding window phase (60s) - then render with what we have
 
   // Workflow scope filter: 'parents' | 'subs' | 'both'
   static WORKFLOW_SCOPE = 'parents';  // Default: parents only (fast load)
@@ -3582,27 +3583,45 @@ class RewstApp {
     0.25: 20000, // 20 seconds for 0.25-day chunks (6 hours)
     0.1: 20000   // 20 seconds for 0.1-day chunks (~2.4 hours)
   };
-  // RETRY-SPECIFIC: More aggressive limits - stop at 3 days, shorter timeouts
-  static RETRY_CHUNK_SIZES = [6, 3];  // Stop at 3 days - if that fails, give up (faster abandonment)
+  // RETRY-SPECIFIC: Same chunk sizes as regular fetch so we don't abandon busy orgs too early
+  static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1];  // Start at 3 days (skip 6), go down to 0.1d
   static RETRY_CHUNK_TIMEOUTS = {
-    6: 10000,    // 10 seconds for 6-day chunks
-    3: 20000     // 20 seconds for 3-day chunks (max - then abandon)
+    3: 15000,    // 15 seconds for 3-day chunks
+    2: 15000,    // 15 seconds for 2-day chunks
+    1: 20000,    // 20 seconds for 1-day chunks
+    0.5: 25000,  // 25 seconds for 0.5-day chunks
+    0.25: 30000, // 30 seconds for 0.25-day chunks
+    0.1: 45000   // 45 seconds for 0.1-day chunks (last resort)
   };
 
   /**
    * Fetch executions for a date range with adaptive chunk sizing.
    * Starts with larger chunks and automatically splits on timeout.
+   * Supports options.deadline - if set, will bail out mid-loop and throw DeadlineError with partial results.
    * @private
    */
   async _fetchChunkAdaptive(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
     const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
     const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+    // Use globalDeadline (from getRecentExecutions) if provided, else fall back to per-chunk deadline
+    const { globalDeadline, deadline, deadlineFailedOrgs } = options;
+    const effectiveDeadline = globalDeadline || deadline;
 
     // Process from endDay backwards to startDay
     let currentEnd = endDay;
     let currentChunkIndex = chunkSizeIndex;
 
     while (currentEnd > startDay) {
+      // Check global deadline at start of each chunk iteration
+      if (effectiveDeadline && Date.now() > effectiveDeadline) {
+        this._log(`⏰ GLOBAL DEADLINE HIT inside _fetchChunkAdaptive - returning ${allResults.length} partial results, remaining: days ${startDay}-${currentEnd}`);
+        const deadlineError = new Error('DEADLINE_HIT');
+        deadlineError.isDeadline = true;
+        deadlineError.partialResults = allResults;
+        deadlineError.remainingRange = { startDay, endDay: currentEnd, chunkSizeIndex: currentChunkIndex };
+        throw deadlineError;
+      }
+
       const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
       const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
       const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 10000;
@@ -3611,7 +3630,13 @@ class RewstApp {
 
       try {
         const fetchStart = Date.now();
-        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options });
+        // Pass globalDeadline and deadlineFailedOrgs through to sliding window
+        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, {
+          timeout: timeoutMs,
+          ...options,
+          globalDeadline: effectiveDeadline,
+          deadlineFailedOrgs
+        });
         const elapsed = Date.now() - fetchStart;
 
         if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
@@ -3656,12 +3681,76 @@ class RewstApp {
   }
 
   /**
-   * RETRY-SPECIFIC: Fetch with more aggressive limits (1-day min, 25s max timeout)
-   * Used by background retry - gives up faster to avoid long waits
+   * SINGLE-ORG ONLY: Adaptive chunking for a single org (used by sliding window)
+   * Calls _fetchExecutionsChunkSingle directly to avoid routing back to sliding window
+   * @private
+   */
+  async _fetchChunkAdaptiveSingleOrg(startDay, endDay, chunkSizeIndex, workflowId, orgId, allResults = [], options = {}) {
+    const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
+    const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+    const { deadline } = options;
+
+    let currentEnd = endDay;
+    let currentChunkIndex = chunkSizeIndex;
+
+    while (currentEnd > startDay) {
+      // Check deadline at start of each chunk iteration
+      if (deadline && Date.now() > deadline) {
+        this._log(`⏰ DEADLINE HIT for org ${orgId.slice(0, 8)} - returning ${allResults.length} partial results, remaining: days ${startDay}-${currentEnd}`);
+        const deadlineError = new Error('DEADLINE_HIT');
+        deadlineError.isDeadline = true;
+        deadlineError.partialResults = allResults;
+        deadlineError.remainingRange = { startDay, endDay: currentEnd, chunkSizeIndex: currentChunkIndex };
+        throw deadlineError;
+      }
+
+      const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
+      const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
+      const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 10000;
+
+      this._log(`   📦 [${orgId.slice(0, 8)}] days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} (${currentChunkSize}d chunk, ${timeoutMs/1000}s timeout)`);
+
+      try {
+        const fetchStart = Date.now();
+        // Call single-org fetch directly (not _fetchExecutionsChunk which routes to sliding window)
+        const chunkExecutions = await this._fetchExecutionsChunkSingle(currentStart, currentEnd, workflowId, [orgId], { timeout: timeoutMs, ...options });
+        const elapsed = Date.now() - fetchStart;
+
+        if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
+          this._log(`   ⚠️ [${orgId.slice(0, 8)}] chunk took ${elapsed}ms, reducing size`);
+          currentChunkIndex++;
+        }
+
+        allResults.push(...chunkExecutions);
+        this._log(`   ✓ [${orgId.slice(0, 8)}] got ${chunkExecutions.length} in ${elapsed}ms (total: ${allResults.length})`);
+        currentEnd = currentStart;
+
+      } catch (error) {
+        if (currentChunkIndex < CHUNK_SIZES.length - 1) {
+          const smallerSize = CHUNK_SIZES[currentChunkIndex + 1];
+          this._log(`   ⚠️ [${orgId.slice(0, 8)}] timeout, trying ${smallerSize}d chunk...`);
+          currentChunkIndex++;
+        } else {
+          this._error(`Failed to fetch org ${orgId.slice(0, 8)} at minimum chunk size. Skipping remaining days.`, error);
+          currentEnd = startDay; // Skip remaining
+        }
+      }
+
+      if (currentEnd > startDay) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+
+    return allResults;
+  }
+
+  /**
+   * RETRY-SPECIFIC: Fetch with adaptive chunk sizes down to 0.1 day (2.4 hours)
+   * Used by background retry - starts smaller but goes all the way down to catch busy orgs
    * @private
    */
   async _fetchChunkAdaptiveRetry(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = []) {
-    const CHUNK_SIZES = RewstApp.RETRY_CHUNK_SIZES;  // [6, 3, 2, 1] - stops at 1 day
+    const CHUNK_SIZES = RewstApp.RETRY_CHUNK_SIZES;  // [3, 2, 1, 0.5, 0.25, 0.1] - goes down to 0.1 day
     const CHUNK_TIMEOUTS = RewstApp.RETRY_CHUNK_TIMEOUTS;
 
     let currentEnd = endDay;
@@ -3676,7 +3765,10 @@ class RewstApp {
 
       try {
         const fetchStart = Date.now();
-        const chunkExecutions = await this._fetchExecutionsChunk(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs });
+        // IMPORTANT: Call _fetchExecutionsChunkSingle directly, NOT _fetchExecutionsChunk
+        // _fetchExecutionsChunk routes to sliding window which has a 60s global deadline
+        // Retry should run indefinitely without a deadline - it's the background task
+        const chunkExecutions = await this._fetchExecutionsChunkSingle(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs });
         const elapsed = Date.now() - fetchStart;
 
         if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
@@ -3694,9 +3786,122 @@ class RewstApp {
           this._log(`   [RETRY] ⚠️ Failed, trying ${smallerSize}-day chunks...`);
           currentChunkIndex++;
         } else {
-          // At 3-day minimum - give up on this range (don't go smaller)
-          this._log(`   [RETRY] ❌ Failed at 3-day minimum - giving up on days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)}`);
-          throw new Error(`RETRY_ABANDONED: Could not fetch days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} even at 3-day chunks`);
+          // At 0.1-day (2.4 hour) minimum - give up on this range
+          this._log(`   [RETRY] ❌ Failed at 0.1-day minimum - giving up on days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)}`);
+          throw new Error(`RETRY_ABANDONED: Could not fetch days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} even at 0.1-day chunks`);
+        }
+      }
+
+      if (currentEnd > startDay) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+    }
+
+    return allResults;
+  }
+
+  /**
+   * RETRY-SPECIFIC with LIGHTWEIGHT-FIRST optimization
+   * Two-pass approach:
+   *   1. Lightweight query first (no conductor.input) - much faster, more likely to succeed
+   *   2. Only fetch conductor.input for executions from "unsafe" workflows (Form/App Platform triggers)
+   *
+   * This dramatically reduces data transfer for busy orgs where 99%+ of executions are Cron/Webhook
+   * @private
+   */
+  async _fetchChunkAdaptiveRetryLightweight(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = []) {
+    const CHUNK_SIZES = RewstApp.RETRY_CHUNK_SIZES;
+    const CHUNK_TIMEOUTS = RewstApp.RETRY_CHUNK_TIMEOUTS;
+
+    let currentEnd = endDay;
+    let currentChunkIndex = chunkSizeIndex;
+
+    // Get set of workflow IDs that need full query (Form/App Platform triggers)
+    const unsafeWorkflowIds = this._getUnsafeWorkflowIds();
+
+    while (currentEnd > startDay) {
+      const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
+      const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
+      const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 25000;
+
+      this._log(`   [RETRY-LITE] Fetching days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} (${currentChunkSize}-day chunk, ${timeoutMs/1000}s timeout)...`);
+
+      try {
+        const fetchStart = Date.now();
+
+        // PASS 1: Lightweight query (no conductor.input, no workflow.triggers)
+        const lightweightExecutions = await this._fetchExecutionsChunkSingleLightweight(
+          currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs }
+        );
+        const pass1Elapsed = Date.now() - fetchStart;
+
+        this._log(`   [RETRY-LITE] Pass 1: Got ${lightweightExecutions.length} lightweight in ${pass1Elapsed}ms`);
+
+        // PASS 2: Identify executions that need conductor.input (from unsafe workflows)
+        const needsFullQuery = [];
+        const safeLightweight = [];
+
+        for (const exec of lightweightExecutions) {
+          const workflowIdVal = exec.workflow?.id;
+          if (workflowIdVal && unsafeWorkflowIds.has(workflowIdVal)) {
+            needsFullQuery.push(exec);
+          } else {
+            safeLightweight.push(exec);
+          }
+        }
+
+        this._log(`   [RETRY-LITE] Split: ${safeLightweight.length} safe (lightweight OK) + ${needsFullQuery.length} need conductor.input`);
+
+        // Add safe executions directly
+        allResults.push(...safeLightweight);
+
+        // PASS 2b: Fetch conductor.input ONLY for unsafe workflow executions
+        if (needsFullQuery.length > 0) {
+          const pass2Start = Date.now();
+
+          // We need to re-fetch these specific executions with full query
+          // Since we can't filter by execution ID in the API, we fetch the same time range
+          // but with full query, then match by ID
+          const fullQueryExecutions = await this._fetchExecutionsChunkSingle(
+            currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs + 10000 } // Extra time for full query
+          );
+          const pass2Elapsed = Date.now() - pass2Start;
+
+          // Build lookup map of full query results
+          const fullQueryMap = new Map(fullQueryExecutions.map(e => [e.id, e]));
+
+          // Replace lightweight with full for unsafe executions
+          for (const lightExec of needsFullQuery) {
+            const fullExec = fullQueryMap.get(lightExec.id);
+            if (fullExec) {
+              allResults.push(fullExec);
+            } else {
+              // Fallback to lightweight if full not found (shouldn't happen)
+              allResults.push(lightExec);
+            }
+          }
+
+          this._log(`   [RETRY-LITE] Pass 2: Enriched ${needsFullQuery.length} executions with conductor.input in ${pass2Elapsed}ms`);
+        }
+
+        const totalElapsed = Date.now() - fetchStart;
+        if (totalElapsed > timeoutMs * 1.5 && currentChunkIndex < CHUNK_SIZES.length - 1) {
+          this._log(`   [RETRY-LITE] ⚠️ Total took ${totalElapsed}ms, reducing chunk size`);
+          currentChunkIndex++;
+        }
+
+        this._log(`   [RETRY-LITE] ✓ Chunk done: ${lightweightExecutions.length} total in ${totalElapsed}ms`);
+        currentEnd = currentStart;
+
+      } catch (error) {
+        if (currentChunkIndex < CHUNK_SIZES.length - 1) {
+          const smallerSize = CHUNK_SIZES[currentChunkIndex + 1];
+          this._log(`   [RETRY-LITE] ⚠️ Failed, trying ${smallerSize}-day chunks...`);
+          currentChunkIndex++;
+        } else {
+          // At minimum chunk size - give up
+          this._log(`   [RETRY-LITE] ❌ Failed at minimum chunk size - giving up on days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)}`);
+          throw new Error(`RETRY_ABANDONED: Could not fetch days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} even at minimum chunks`);
         }
       }
 
@@ -3719,9 +3924,25 @@ class RewstApp {
     const timeRangeMsg = daysBack ? `from last ${daysBack} day(s)` : 'from all time';
     this._log(`Fetching executions ${timeRangeMsg}...`);
 
-    try {
-      let allExecutions = [];
+    // Create a GLOBAL deadline for the entire fetch operation
+    // This spans all time chunks and all orgs - prevents one org from hogging 60s per chunk
+    const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
+    const globalDeadline = Date.now() + maxDurationMs;
+    this._log(`⏱️ Global deadline set: ${maxDurationMs/1000}s from now`);
 
+    // Track orgs that have already been queued for retry (deadline hit)
+    // These should be skipped in subsequent time chunks
+    const deadlineFailedOrgs = new Set();
+
+    // CRITICAL: Store the original full date range so failed orgs can be queued for FULL retry
+    // When orgs fail mid-chunk (e.g. during chunk 21-24), they need to retry the FULL range (0-30),
+    // not just the chunk they failed on
+    const originalDaysBack = daysBack;
+
+    // Declare outside try block so catch can access it for partial results
+    let allExecutions = [];
+
+    try {
       // Check if we need two-pass fetch (parents + subs separately)
       const needsTwoPassFetch = RewstApp.INCLUDE_SUB_WORKFLOWS === true;
 
@@ -3737,9 +3958,18 @@ class RewstApp {
         RewstApp.INCLUDE_SUB_WORKFLOWS = false;
 
         if (daysBack && daysBack > 0) {
-          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds);
+          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds, [], {
+            globalDeadline,
+            deadlineFailedOrgs,
+            originalDaysBack  // Pass full range so failed orgs retry ALL days, not just the chunk they failed on
+          });
         } else {
-          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs });
+          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, {
+            timeout: timeoutMs,
+            globalDeadline,
+            deadlineFailedOrgs,
+            originalDaysBack
+          });
         }
 
         const parentsElapsed = ((Date.now() - parentsStart) / 1000).toFixed(1);
@@ -3754,9 +3984,20 @@ class RewstApp {
         let subExecutions = [];
 
         if (daysBack && daysBack > 0) {
-          subExecutions = await this._fetchChunkAdaptiveLightweight(0, daysBack, 0, workflowId, orgIds, [], { scope: 'subs' });
+          subExecutions = await this._fetchChunkAdaptiveLightweight(0, daysBack, 0, workflowId, orgIds, [], {
+            scope: 'subs',
+            globalDeadline,
+            deadlineFailedOrgs,
+            originalDaysBack
+          });
         } else {
-          subExecutions = await this._fetchExecutionsChunkLightweight(null, null, workflowId, orgIds, { timeout: timeoutMs, scope: 'subs' });
+          subExecutions = await this._fetchExecutionsChunkLightweight(null, null, workflowId, orgIds, {
+            timeout: timeoutMs,
+            scope: 'subs',
+            globalDeadline,
+            deadlineFailedOrgs,
+            originalDaysBack
+          });
         }
 
         const subsElapsed = ((Date.now() - subsStart) / 1000).toFixed(1);
@@ -3775,11 +4016,23 @@ class RewstApp {
         // Pass through options.scope if provided (used by loadSubWorkflows button)
         if (daysBack && daysBack > 0) {
           this._log(`Using adaptive chunking (6→3→2→1→0.5→0.25→0.1 days) with progressive timeouts`);
-          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds, [], options);
+          // Pass global deadline and deadlineFailedOrgs to skip orgs that already timed out
+          allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds, [], {
+            ...options,
+            globalDeadline,
+            deadlineFailedOrgs,
+            originalDaysBack  // Pass full range so failed orgs retry ALL days, not just the chunk they failed on
+          });
           this._log(`Retrieved ${allExecutions.length} total execution(s) from adaptive chunks`);
         } else {
           this._log('Fetching all executions (no date filter - may be slow for large datasets)');
-          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, { timeout: timeoutMs, ...options });
+          allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, {
+            timeout: timeoutMs,
+            ...options,
+            globalDeadline,
+            deadlineFailedOrgs,
+            originalDaysBack
+          });
         }
       }
 
@@ -3798,6 +4051,52 @@ class RewstApp {
       return allExecutions;
   
     } catch (error) {
+      // Handle DEADLINE_HIT specially - return partial results instead of throwing
+      if (error.isDeadline) {
+        this._log(`⏱️ Global deadline hit - returning ${error.partialResults?.length || 0} partial results`);
+        allExecutions = error.partialResults || [];
+
+        // Queue any deadline-failed orgs for background retry
+        if (deadlineFailedOrgs.size > 0) {
+          const failedOrgIds = Array.from(deadlineFailedOrgs);
+          this._log(`📋 Queueing ${failedOrgIds.length} deadline-failed org(s) for background retry: ${failedOrgIds.join(', ')}`);
+
+          // Store in _failedOrgBatchRetry for retryFailedOrgBatches() to pick up
+          if (!this._failedOrgBatchRetry) {
+            this._failedOrgBatchRetry = {
+              orgIds: [],
+              chunks: [],
+              workflowId,
+              options: { ...options, timeout: 30000 }
+            };
+          }
+
+          // Add all deadline-failed orgs - they'll be retried for the full time range
+          for (const orgId of failedOrgIds) {
+            if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+              this._failedOrgBatchRetry.orgIds.push(orgId);
+              this._failedOrgBatchRetry.chunks.push({
+                orgId,
+                daysAgoStart: 0,
+                daysAgoEnd: daysBack || 30
+              });
+            }
+          }
+        }
+
+        // Continue to trigger info enrichment with what we have
+        if (includeTriggerInfo && allExecutions.length > 0) {
+          this._log(`Fetching trigger information for ${allExecutions.length} executions (partial data)...`);
+          await this._buildReferenceCache();
+          const result = await this._fetchTriggerInfoBatched(allExecutions, includeRawContext, { timeout: timeoutMs });
+          allExecutions = result.executions;
+          this._failedExecutionIds = result.failedIds;
+        }
+
+        this._log(`Retrieved ${allExecutions.length} execution(s) (partial - deadline hit, ${deadlineFailedOrgs.size} orgs queued for retry)`);
+        return allExecutions;
+      }
+
       this._error('Failed to get recent executions', error);
       // Preserve session expired flag when re-throwing
       const wrappedError = new Error(`Failed to get recent executions: ${error.message}`);
@@ -4232,10 +4531,14 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
         };
       }
 
-      // Add failed orgs with their time chunk info (dedupe by orgId)
+      // CRITICAL FIX: When orgs fail, they need to retry from day 0 to where they failed,
+      // NOT just the current chunk. If originalDaysBack is provided, use that.
+      const retryEndDay = options.originalDaysBack || daysAgoEnd;
+
+      // Add failed orgs with FULL time range (0 to retryEndDay)
       failedOrgIds.forEach(orgId => {
-        // Add chunk info for this org
-        const chunkInfo = { orgId, daysAgoStart, daysAgoEnd };
+        // Add chunk info for this org - use 0 as start since we need ALL data
+        const chunkInfo = { orgId, daysAgoStart: 0, daysAgoEnd: retryEndDay };
         this._failedOrgBatchRetry.chunks.push(chunkInfo);
 
         // Add to orgIds if not already there
@@ -4244,7 +4547,7 @@ async _fetchExecutionsMultiOrg(daysAgoStart, daysAgoEnd, workflowId, orgIds, opt
         }
       });
 
-      this._log(`📋 Accumulated ${this._failedOrgBatchRetry.orgIds.length} unique failed org(s) for background retry`);
+      this._log(`📋 Accumulated ${this._failedOrgBatchRetry.orgIds.length} unique failed org(s) for background retry (0-${retryEndDay} days)`);
     }
   } else if (successfulBatches.length > 0) {
     this._log(`✅ All ${successfulBatches.length} completed batch(es) succeeded`);
@@ -4288,48 +4591,103 @@ async getPendingOrgBatchResults() {
 /**
  * Fetch executions using sliding window (staggered parallel processing)
  * For small org counts (≤10) where sub-workflow data causes timeouts in batches
+ * Has a hard deadline (MAX_SLIDING_WINDOW_MS) - after which it stops and moves remaining to retry
  */
 async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
-  const { onProgress } = options;
+  const { onProgress, globalDeadline, deadlineFailedOrgs } = options;
   const windowSize = RewstApp.ORG_WINDOW_SIZE || 3;
+  const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
 
-  this._log(`🪟 Sliding window: ${orgIds.length} orgs, ${windowSize} at a time`);
+  // Use globalDeadline if provided (from getRecentExecutions), otherwise create a local one
+  // This ensures one 60s deadline spans ALL time chunks, not 60s per chunk
+  const deadline = globalDeadline || (Date.now() + maxDurationMs);
+  const isGlobalDeadline = !!globalDeadline;
+
+  // Filter out orgs that already hit deadline in previous time chunks
+  const orgsToProcess = deadlineFailedOrgs
+    ? orgIds.filter(id => !deadlineFailedOrgs.has(id))
+    : orgIds;
+
+  if (orgsToProcess.length < orgIds.length) {
+    this._log(`🪟 Sliding window: ${orgsToProcess.length} orgs (${orgIds.length - orgsToProcess.length} already failed, skipping), ${windowSize} at a time${isGlobalDeadline ? ' (GLOBAL deadline)' : ''}`);
+  } else {
+    this._log(`🪟 Sliding window: ${orgIds.length} orgs, ${windowSize} at a time${isGlobalDeadline ? ' (GLOBAL deadline)' : ''}`);
+  }
 
   const allExecutions = [];
   const failedOrgIds = [];
   let completedCount = 0;
+  let deadlineHit = false;
 
   // Queue management (same pattern as retryFailedOrgBatches)
-  const queue = [...orgIds];
+  const queue = [...orgsToProcess];
   const activePromises = new Map();
+  const activeOrgIds = new Set(); // Track which orgs are currently in-flight
 
   const processOrg = async (orgId, orgIndex) => {
     const startTime = Date.now();
-    this._log(`🔍 [${orgIndex + 1}/${orgIds.length}] Org ${orgId.slice(0, 8)}`);
+    this._log(`🔍 [${orgIndex + 1}/${orgsToProcess.length}] Org ${orgId.slice(0, 8)}`);
 
     try {
-      const orgExecs = await this._fetchChunkAdaptive(
-        daysAgoStart, daysAgoEnd, 0, workflowId, [orgId], [],
-        { timeout: 45000, ...options }  // 45s per org, pass through scope
+      // For single-org fetch within sliding window, use direct chunk fetch (no nested sliding window)
+      const orgExecs = await this._fetchChunkAdaptiveSingleOrg(
+        daysAgoStart, daysAgoEnd, 0, workflowId, orgId, [],
+        { timeout: 45000, deadline, ...options }  // 45s per org, pass deadline + scope
       );
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      this._log(`✅ [${orgIndex + 1}/${orgIds.length}] ${orgExecs.length} execs in ${elapsed}s`);
+      this._log(`✅ [${orgIndex + 1}/${orgsToProcess.length}] ${orgExecs.length} execs in ${elapsed}s`);
 
       return { success: true, results: orgExecs, orgId };
     } catch (error) {
+      // Handle deadline error specially - keep partial results, queue remaining range
+      if (error.isDeadline) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const partialCount = error.partialResults?.length || 0;
+        this._log(`⏰ [${orgIndex + 1}/${orgsToProcess.length}] DEADLINE after ${elapsed}s - keeping ${partialCount} partial results`);
+        return {
+          success: false,
+          results: error.partialResults || [],
+          orgId,
+          remainingRange: error.remainingRange,
+          isDeadline: true
+        };
+      }
+
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      this._error(`❌ [${orgIndex + 1}/${orgIds.length}] FAILED after ${elapsed}s`, error);
+      this._error(`❌ [${orgIndex + 1}/${orgsToProcess.length}] FAILED after ${elapsed}s`, error);
       return { success: false, results: [], orgId };
     }
   };
 
+  // Track partial ranges that need retry (deadline hit mid-chunk)
+  const partialRanges = [];
+
   const processResult = (result) => {
+    activeOrgIds.delete(result.orgId);
     if (result.results.length > 0) {
       allExecutions.push(...result.results);
     }
     if (!result.success) {
-      failedOrgIds.push(result.orgId);
+      // For deadline with partial results, store the remaining range specifically
+      if (result.isDeadline && result.remainingRange) {
+        partialRanges.push({
+          orgId: result.orgId,
+          ...result.remainingRange
+        });
+        // Mark deadline hit so we stop the loop
+        deadlineHit = true;
+        // Add to deadlineFailedOrgs so this org is skipped in subsequent time chunks
+        if (deadlineFailedOrgs) {
+          deadlineFailedOrgs.add(result.orgId);
+        }
+      } else {
+        failedOrgIds.push(result.orgId);
+        // Also add non-deadline failures to skip in subsequent chunks
+        if (deadlineFailedOrgs) {
+          deadlineFailedOrgs.add(result.orgId);
+        }
+      }
     }
     completedCount++;
 
@@ -4338,9 +4696,9 @@ async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgI
       onProgress({
         phase: 'sliding_window',
         completed: completedCount,
-        total: orgIds.length,
+        total: orgsToProcess.length,
         executions: allExecutions.length,
-        status: `Loaded ${completedCount}/${orgIds.length} orgs`
+        status: `Loaded ${completedCount}/${orgsToProcess.length} orgs`
       });
     }
   };
@@ -4350,6 +4708,7 @@ async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgI
   // Start initial window
   while (activePromises.size < windowSize && queue.length > 0) {
     const orgId = queue.shift();
+    activeOrgIds.add(orgId);
     const promise = processOrg(orgId, orgIndex++).then(result => {
       processResult(result);
       activePromises.delete(orgId);
@@ -4358,12 +4717,27 @@ async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgI
     activePromises.set(orgId, promise);
   }
 
-  // Process remaining with sliding window
+  // Process remaining with sliding window - but respect deadline
   while (activePromises.size > 0) {
+    // Check deadline before waiting
+    if (Date.now() > deadline) {
+      deadlineHit = true;
+      this._log(`⏰ DEADLINE HIT (${maxDurationMs/1000}s) - stopping sliding window, ${queue.length} orgs in queue, ${activePromises.size} in-flight`);
+      break;
+    }
+
     await Promise.race(activePromises.values());
+
+    // Check deadline again after completing an org
+    if (Date.now() > deadline) {
+      deadlineHit = true;
+      this._log(`⏰ DEADLINE HIT (${maxDurationMs/1000}s) - stopping sliding window, ${queue.length} orgs in queue, ${activePromises.size} in-flight`);
+      break;
+    }
 
     while (activePromises.size < windowSize && queue.length > 0) {
       const orgId = queue.shift();
+      activeOrgIds.add(orgId);
       const promise = processOrg(orgId, orgIndex++).then(result => {
         processResult(result);
         activePromises.delete(orgId);
@@ -4373,8 +4747,38 @@ async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgI
     }
   }
 
+  // If deadline hit, we need to handle remaining orgs
+  if (deadlineHit) {
+    // Wait for active promises to settle (they'll finish on their own, we just won't start new ones)
+    // Use Promise.allSettled so we don't block forever - give them 5 more seconds max
+    const remainingTimeout = 5000;
+    const settlePromise = Promise.allSettled(activePromises.values());
+    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve('timeout'), remainingTimeout));
+
+    const settleResult = await Promise.race([settlePromise, timeoutPromise]);
+
+    if (settleResult === 'timeout') {
+      this._log(`⚠️ Active orgs didn't finish in ${remainingTimeout/1000}s grace period - moving to retry`);
+      // Any orgs still in activeOrgIds are considered failed
+      activeOrgIds.forEach(orgId => {
+        if (!failedOrgIds.includes(orgId)) {
+          failedOrgIds.push(orgId);
+        }
+      });
+    }
+
+    // All orgs still in queue go to retry
+    queue.forEach(orgId => {
+      if (!failedOrgIds.includes(orgId)) {
+        failedOrgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 Deadline caused ${failedOrgIds.length} org(s) to be moved to retry queue`);
+  }
+
   // Store failed orgs for potential retry
-  if (failedOrgIds.length > 0) {
+  if (failedOrgIds.length > 0 || partialRanges.length > 0) {
     if (!this._failedOrgBatchRetry) {
       this._failedOrgBatchRetry = {
         orgIds: [],
@@ -4384,66 +4788,144 @@ async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgI
       };
     }
 
+    // CRITICAL FIX: When orgs fail, they need to retry from day 0 to where they failed (daysAgoEnd),
+    // NOT just the current chunk (daysAgoStart to daysAgoEnd).
+    // Why: Chunks are processed backward (30→24→21→18→...). If deadline hits at chunk 21-24,
+    // we have data for 24-30 but NOT for 0-24. The retry must cover 0-24.
+    // If originalDaysBack is provided, use that as the full end range to be safe.
+    const retryEndDay = options.originalDaysBack || daysAgoEnd;
+
+    // Completely failed orgs - retry from day 0 to where they failed
     failedOrgIds.forEach(orgId => {
-      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart, daysAgoEnd });
+      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart: 0, daysAgoEnd: retryEndDay });
       if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
         this._failedOrgBatchRetry.orgIds.push(orgId);
       }
     });
 
-    this._log(`📋 ${failedOrgIds.length} org(s) failed, saved for retry`);
+    // Partial deadline results - they got SOME data for THIS chunk, but still need ALL earlier chunks
+    // The remainingRange from the error only tells us where THIS chunk stopped, not all the chunks we missed
+    // Since chunks process backward (30→24→21→...), if we hit deadline at chunk 24-27, we have data for 27-30
+    // but NOT for 0-27. So we need to retry from 0 to retryEndDay (the full range).
+    partialRanges.forEach(({ orgId, startDay, endDay, chunkSizeIndex }) => {
+      this._failedOrgBatchRetry.chunks.push({
+        orgId,
+        daysAgoStart: 0,  // CRITICAL: Retry from day 0, not from where this chunk stopped
+        daysAgoEnd: retryEndDay,  // Use full range end
+        chunkSizeIndex: chunkSizeIndex || 0
+      });
+      if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+        this._failedOrgBatchRetry.orgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 ${failedOrgIds.length} org(s) failed + ${partialRanges.length} partial(s), all retry 0-${retryEndDay} days`);
   }
 
-  this._log(`📊 Sliding window complete: ${allExecutions.length} executions`);
+  this._log(`📊 Sliding window complete: ${allExecutions.length} executions from ${completedCount} orgs${deadlineHit ? ' (deadline hit)' : ''}`);
   return allExecutions;
 }
 
 /**
  * Fetch executions using sliding window with LIGHTWEIGHT query
  * Same as _fetchExecutionsMultiOrgSliding but uses lightweight adaptive fetch
+ * Has a hard deadline (MAX_SLIDING_WINDOW_MS) - after which it stops and moves remaining to retry
  * @private
  */
 async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options = {}) {
-  const { onProgress } = options;
+  const { onProgress, globalDeadline, deadlineFailedOrgs } = options;
   const windowSize = RewstApp.ORG_WINDOW_SIZE || 3;
+  const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
 
-  this._log(`🪟 Sliding window (lightweight): ${orgIds.length} orgs, ${windowSize} at a time`);
+  // Use globalDeadline if provided (from getRecentExecutions), otherwise create a local one
+  const deadline = globalDeadline || (Date.now() + maxDurationMs);
+  const isGlobalDeadline = !!globalDeadline;
+
+  // Filter out orgs that already hit deadline in previous time chunks
+  const orgsToProcess = deadlineFailedOrgs
+    ? orgIds.filter(id => !deadlineFailedOrgs.has(id))
+    : orgIds;
+
+  if (orgsToProcess.length < orgIds.length) {
+    this._log(`🪟 Sliding window (lightweight): ${orgsToProcess.length} orgs (${orgIds.length - orgsToProcess.length} already failed, skipping), ${windowSize} at a time${isGlobalDeadline ? ' (GLOBAL deadline)' : ''}`);
+  } else {
+    this._log(`🪟 Sliding window (lightweight): ${orgIds.length} orgs, ${windowSize} at a time${isGlobalDeadline ? ' (GLOBAL deadline)' : ''}`);
+  }
 
   const allExecutions = [];
   const failedOrgIds = [];
   let completedCount = 0;
+  let deadlineHit = false;
 
   // Queue management (same pattern as retryFailedOrgBatches)
-  const queue = [...orgIds];
+  const queue = [...orgsToProcess];
   const activePromises = new Map();
+  const activeOrgIds = new Set(); // Track which orgs are currently in-flight
 
   const processOrg = async (orgId, orgIndex) => {
     const startTime = Date.now();
-    this._log(`🔍 [Lightweight ${orgIndex + 1}/${orgIds.length}] Org ${orgId.slice(0, 8)}`);
+    this._log(`🔍 [Lightweight ${orgIndex + 1}/${orgsToProcess.length}] Org ${orgId.slice(0, 8)}`);
 
     try {
-      const orgExecs = await this._fetchChunkAdaptiveLightweight(
-        daysAgoStart, daysAgoEnd, 0, workflowId, [orgId], [],
-        { timeout: 45000, ...options }  // 45s per org, pass through scope
+      // For single-org fetch within sliding window, use direct chunk fetch (no nested sliding window)
+      const orgExecs = await this._fetchChunkAdaptiveSingleOrgLightweight(
+        daysAgoStart, daysAgoEnd, 0, workflowId, orgId, [],
+        { timeout: 45000, deadline, ...options }  // 45s per org, pass deadline + scope
       );
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      this._log(`✅ [Lightweight ${orgIndex + 1}/${orgIds.length}] ${orgExecs.length} execs in ${elapsed}s`);
+      this._log(`✅ [Lightweight ${orgIndex + 1}/${orgsToProcess.length}] ${orgExecs.length} execs in ${elapsed}s`);
 
       return { success: true, results: orgExecs, orgId };
     } catch (error) {
+      // Handle deadline error specially - keep partial results, queue remaining range
+      if (error.isDeadline) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        const partialCount = error.partialResults?.length || 0;
+        this._log(`⏰ [Lightweight ${orgIndex + 1}/${orgsToProcess.length}] DEADLINE after ${elapsed}s - keeping ${partialCount} partial results`);
+        return {
+          success: false,
+          results: error.partialResults || [],
+          orgId,
+          remainingRange: error.remainingRange,
+          isDeadline: true
+        };
+      }
+
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-      this._error(`❌ [Lightweight ${orgIndex + 1}/${orgIds.length}] FAILED after ${elapsed}s`, error);
+      this._error(`❌ [Lightweight ${orgIndex + 1}/${orgsToProcess.length}] FAILED after ${elapsed}s`, error);
       return { success: false, results: [], orgId };
     }
   };
 
+  // Track partial ranges that need retry (deadline hit mid-chunk)
+  const partialRanges = [];
+
   const processResult = (result) => {
+    activeOrgIds.delete(result.orgId);
     if (result.results.length > 0) {
       allExecutions.push(...result.results);
     }
     if (!result.success) {
-      failedOrgIds.push(result.orgId);
+      // For deadline with partial results, store the remaining range specifically
+      if (result.isDeadline && result.remainingRange) {
+        partialRanges.push({
+          orgId: result.orgId,
+          ...result.remainingRange
+        });
+        // Mark deadline hit so we stop the loop
+        deadlineHit = true;
+        // Add to deadlineFailedOrgs so this org is skipped in subsequent time chunks
+        if (deadlineFailedOrgs) {
+          deadlineFailedOrgs.add(result.orgId);
+        }
+      } else {
+        failedOrgIds.push(result.orgId);
+        // Also add non-deadline failures to skip in subsequent chunks
+        if (deadlineFailedOrgs) {
+          deadlineFailedOrgs.add(result.orgId);
+        }
+      }
     }
     completedCount++;
 
@@ -4452,9 +4934,9 @@ async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workf
       onProgress({
         phase: 'sliding_window_lightweight',
         completed: completedCount,
-        total: orgIds.length,
+        total: orgsToProcess.length,
         executions: allExecutions.length,
-        status: `Loaded ${completedCount}/${orgIds.length} orgs (lightweight)`
+        status: `Loaded ${completedCount}/${orgsToProcess.length} orgs (lightweight)`
       });
     }
   };
@@ -4464,6 +4946,7 @@ async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workf
   // Start initial window
   while (activePromises.size < windowSize && queue.length > 0) {
     const orgId = queue.shift();
+    activeOrgIds.add(orgId);
     const promise = processOrg(orgId, orgIndex++).then(result => {
       processResult(result);
       activePromises.delete(orgId);
@@ -4472,12 +4955,27 @@ async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workf
     activePromises.set(orgId, promise);
   }
 
-  // Process remaining with sliding window
+  // Process remaining with sliding window - but respect deadline
   while (activePromises.size > 0) {
+    // Check deadline before waiting
+    if (Date.now() > deadline) {
+      deadlineHit = true;
+      this._log(`⏰ DEADLINE HIT (${maxDurationMs/1000}s) - stopping lightweight sliding window, ${queue.length} orgs in queue, ${activePromises.size} in-flight`);
+      break;
+    }
+
     await Promise.race(activePromises.values());
+
+    // Check deadline again after completing an org
+    if (Date.now() > deadline) {
+      deadlineHit = true;
+      this._log(`⏰ DEADLINE HIT (${maxDurationMs/1000}s) - stopping lightweight sliding window, ${queue.length} orgs in queue, ${activePromises.size} in-flight`);
+      break;
+    }
 
     while (activePromises.size < windowSize && queue.length > 0) {
       const orgId = queue.shift();
+      activeOrgIds.add(orgId);
       const promise = processOrg(orgId, orgIndex++).then(result => {
         processResult(result);
         activePromises.delete(orgId);
@@ -4487,8 +4985,38 @@ async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workf
     }
   }
 
+  // If deadline hit, we need to handle remaining orgs
+  if (deadlineHit) {
+    // Wait for active promises to settle (they'll finish on their own, we just won't start new ones)
+    // Use Promise.allSettled so we don't block forever - give them 5 more seconds max
+    const remainingTimeout = 5000;
+    const settlePromise = Promise.allSettled(activePromises.values());
+    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve('timeout'), remainingTimeout));
+
+    const settleResult = await Promise.race([settlePromise, timeoutPromise]);
+
+    if (settleResult === 'timeout') {
+      this._log(`⚠️ Active orgs didn't finish in ${remainingTimeout/1000}s grace period - moving to retry`);
+      // Any orgs still in activeOrgIds are considered failed
+      activeOrgIds.forEach(orgId => {
+        if (!failedOrgIds.includes(orgId)) {
+          failedOrgIds.push(orgId);
+        }
+      });
+    }
+
+    // All orgs still in queue go to retry
+    queue.forEach(orgId => {
+      if (!failedOrgIds.includes(orgId)) {
+        failedOrgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 Deadline caused ${failedOrgIds.length} org(s) to be moved to retry queue (lightweight)`);
+  }
+
   // Store failed orgs for potential retry
-  if (failedOrgIds.length > 0) {
+  if (failedOrgIds.length > 0 || partialRanges.length > 0) {
     if (!this._failedOrgBatchRetry) {
       this._failedOrgBatchRetry = {
         orgIds: [],
@@ -4498,17 +5026,39 @@ async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workf
       };
     }
 
+    // CRITICAL FIX: When orgs fail, they need to retry from day 0 to where they failed (daysAgoEnd),
+    // NOT just the current chunk (daysAgoStart to daysAgoEnd).
+    // Why: Chunks are processed backward (30→24→21→18→...). If deadline hits at chunk 21-24,
+    // we have data for 24-30 but NOT for 0-24. The retry must cover 0-24.
+    // If originalDaysBack is provided, use that as the full end range to be safe.
+    const retryEndDay = options.originalDaysBack || daysAgoEnd;
+
+    // Completely failed orgs - retry from day 0 to where they failed
     failedOrgIds.forEach(orgId => {
-      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart, daysAgoEnd });
+      this._failedOrgBatchRetry.chunks.push({ orgId, daysAgoStart: 0, daysAgoEnd: retryEndDay });
       if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
         this._failedOrgBatchRetry.orgIds.push(orgId);
       }
     });
 
-    this._log(`📋 ${failedOrgIds.length} org(s) failed (lightweight), saved for retry`);
+    // Partial deadline results - they got SOME data for THIS chunk, but still need ALL earlier chunks
+    // Since chunks process backward (30→24→21→...), we need to retry from 0 to retryEndDay
+    partialRanges.forEach(({ orgId, startDay, endDay, chunkSizeIndex }) => {
+      this._failedOrgBatchRetry.chunks.push({
+        orgId,
+        daysAgoStart: 0,  // CRITICAL: Retry from day 0, not from where this chunk stopped
+        daysAgoEnd: retryEndDay,
+        chunkSizeIndex: chunkSizeIndex || 0
+      });
+      if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+        this._failedOrgBatchRetry.orgIds.push(orgId);
+      }
+    });
+
+    this._log(`📋 ${failedOrgIds.length} org(s) failed + ${partialRanges.length} partial(s), all retry 0-${retryEndDay} days (lightweight)`);
   }
 
-  this._log(`📊 Sliding window (lightweight) complete: ${allExecutions.length} executions`);
+  this._log(`📊 Sliding window (lightweight) complete: ${allExecutions.length} executions from ${completedCount} orgs${deadlineHit ? ' (deadline hit)' : ''}`);
   return allExecutions;
 }
 
@@ -4574,10 +5124,11 @@ async _fetchExecutionsMultiOrgLightweight(daysAgoStart, daysAgoEnd, workflowId, 
  * @param {object} retryOptions - Additional options
  * @param {function} retryOptions.onProgress - Callback for progress updates: ({ completed, total, enrichedCount }) => void
  * @param {boolean} retryOptions.enrichAsYouGo - Enrich each org's results immediately (default: true)
+ * @param {boolean} retryOptions.useLightweight - Use lightweight-first approach (default: true) - fetches without conductor.input first, then only fetches full data for Form/App Platform workflows
  * @returns {Promise<Array|null>} Recovered AND enriched executions or null if none
  */
 async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
-  const { onProgress, enrichAsYouGo = true } = retryOptions;
+  const { onProgress, enrichAsYouGo = true, useLightweight = false } = retryOptions;
 
   if (!this._failedOrgBatchRetry) {
     this._log('📋 No failed org batches to retry');
@@ -4604,7 +5155,8 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
   });
 
   const PARALLEL_LIMIT = 5; // Keep 5 running at all times (sliding window)
-  this._log(`🔄 BACKGROUND RETRY STARTING: ${orgIds.length} org(s) with SLIDING WINDOW (${PARALLEL_LIMIT} concurrent) + RETRY-SPECIFIC chunking (3-day min, 25s max)...`);
+  const modeDesc = useLightweight ? 'LIGHTWEIGHT-FIRST (2-pass)' : 'FULL QUERY';
+  this._log(`🔄 BACKGROUND RETRY STARTING: ${orgIds.length} org(s) with ${modeDesc} + SLIDING WINDOW (${PARALLEL_LIMIT} concurrent)...`);
 
   const retryResults = []; // Will hold ENRICHED results if enrichAsYouGo=true
   const stillFailed = new Set();
@@ -4620,12 +5172,12 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
     const rangeDesc = `days ${range.start.toFixed(1)}-${range.end.toFixed(1)}`;
 
     try {
-      this._log(`   🔄 Retrying org ${orgShort}... ${rangeDesc}`);
+      this._log(`   🔄 Continuing org ${orgShort}... ${rangeDesc} (${useLightweight ? 'lightweight' : 'full'})`);
 
-      // Use _fetchChunkAdaptiveRetry - more aggressive limits (3-day min, 25s max)
-      const orgResults = await this._fetchChunkAdaptiveRetry(
-        range.start, range.end, 0, workflowId, [orgId], []
-      );
+      // Use lightweight-first approach if enabled (default), otherwise full query
+      const orgResults = useLightweight
+        ? await this._fetchChunkAdaptiveRetryLightweight(range.start, range.end, 0, workflowId, [orgId], [])
+        : await this._fetchChunkAdaptiveRetry(range.start, range.end, 0, workflowId, [orgId], []);
 
       completedCount++;
       const progress = `[${completedCount}/${orgIds.length}]`;
@@ -4769,16 +5321,16 @@ async _fetchExecutionsChunk(daysAgoStart, daysAgoEnd, workflowId, orgIds = null,
     return await this._fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
   }
 
-  // HYBRID APPROACH: First 50 orgs use sliding window (guaranteed complete, parent included)
-  // Remaining orgs use batching (with early return for mega-MSP cases)
-  const PRIORITY_ORG_COUNT = 50;
+  // Use sliding window for all orgs - batching (combining multiple orgs in one query) causes timeouts
+  // because the server must gather ALL data before responding. Individual queries per org work better.
+  const PRIORITY_ORG_COUNT = 3000;
 
   if (orgIds.length <= PRIORITY_ORG_COUNT) {
     // All orgs fit in priority window - use sliding window for all
     return await this._fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
   }
 
-  // Split: first 50 sliding window, rest batched
+  // Split: first 3000 sliding window, rest batched (unlikely to hit this)
   const priorityOrgs = orgIds.slice(0, PRIORITY_ORG_COUNT);
   const remainingOrgs = orgIds.slice(PRIORITY_ORG_COUNT);
 
@@ -4972,16 +5524,16 @@ async _fetchExecutionsChunkLightweight(daysAgoStart, daysAgoEnd, workflowId, org
     return await this._fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
   }
 
-  // HYBRID APPROACH: First 50 orgs use sliding window (guaranteed complete, parent included)
-  // Remaining orgs use batching (with early return for mega-MSP cases)
-  const PRIORITY_ORG_COUNT = 50;
+  // Use sliding window for all orgs - batching (combining multiple orgs in one query) causes timeouts
+  // because the server must gather ALL data before responding. Individual queries per org work better.
+  const PRIORITY_ORG_COUNT = 3000;
 
   if (orgIds.length <= PRIORITY_ORG_COUNT) {
     // All orgs fit in priority window - use sliding window for all
     return await this._fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workflowId, orgIds, options);
   }
 
-  // Split: first 50 sliding window, rest batched
+  // Split: first 3000 sliding window, rest batched (unlikely to hit this)
   const priorityOrgs = orgIds.slice(0, PRIORITY_ORG_COUNT);
   const remainingOrgs = orgIds.slice(PRIORITY_ORG_COUNT);
 
@@ -4999,17 +5551,31 @@ async _fetchExecutionsChunkLightweight(daysAgoStart, daysAgoEnd, workflowId, org
 /**
  * Fetch executions with adaptive chunking using LIGHTWEIGHT query
  * Same logic as _fetchChunkAdaptive() but uses lightweight query
+ * Supports options.deadline - if set, will bail out mid-loop and throw DeadlineError with partial results.
  * @private
  */
 async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
   const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
   const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+  // Use globalDeadline (from getRecentExecutions) if provided, else fall back to per-chunk deadline
+  const { globalDeadline, deadline, deadlineFailedOrgs } = options;
+  const effectiveDeadline = globalDeadline || deadline;
 
   // Process from endDay backwards to startDay
   let currentEnd = endDay;
   let currentChunkIndex = chunkSizeIndex;
 
   while (currentEnd > startDay) {
+    // Check global deadline at start of each chunk iteration
+    if (effectiveDeadline && Date.now() > effectiveDeadline) {
+      this._log(`⏰ GLOBAL DEADLINE HIT inside _fetchChunkAdaptiveLightweight - returning ${allResults.length} partial results, remaining: days ${startDay}-${currentEnd}`);
+      const deadlineError = new Error('DEADLINE_HIT');
+      deadlineError.isDeadline = true;
+      deadlineError.partialResults = allResults;
+      deadlineError.remainingRange = { startDay, endDay: currentEnd, chunkSizeIndex: currentChunkIndex };
+      throw deadlineError;
+    }
+
     const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
     const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
     const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 10000;
@@ -5018,7 +5584,13 @@ async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowI
 
     try {
       const fetchStart = Date.now();
-      const chunkExecutions = await this._fetchExecutionsChunkLightweight(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options });
+      // Pass globalDeadline and deadlineFailedOrgs through to sliding window
+      const chunkExecutions = await this._fetchExecutionsChunkLightweight(currentStart, currentEnd, workflowId, orgIds, {
+        timeout: timeoutMs,
+        ...options,
+        globalDeadline: effectiveDeadline,
+        deadlineFailedOrgs
+      });
       const elapsed = Date.now() - fetchStart;
 
       if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
@@ -5054,6 +5626,64 @@ async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowI
     }
 
     // Small delay between chunks to be nice to the API
+    if (currentEnd > startDay) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+  }
+
+  return allResults;
+}
+
+/**
+ * SINGLE-ORG ONLY: Adaptive chunking for a single org with lightweight query (used by sliding window)
+ * Calls _fetchExecutionsChunkSingleLightweight directly to avoid routing back to sliding window
+ * @private
+ */
+async _fetchChunkAdaptiveSingleOrgLightweight(startDay, endDay, chunkSizeIndex, workflowId, orgId, allResults = [], options = {}) {
+  const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
+  const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+  const { deadline } = options;
+
+  let currentEnd = endDay;
+  let currentChunkIndex = chunkSizeIndex;
+
+  while (currentEnd > startDay) {
+    // Check deadline at start of each chunk iteration
+    if (deadline && Date.now() > deadline) {
+      this._log(`⏰ DEADLINE HIT for org ${orgId.slice(0, 8)} (lightweight) - returning ${allResults.length} partial results, remaining: days ${startDay}-${currentEnd}`);
+      const deadlineError = new Error('DEADLINE_HIT');
+      deadlineError.isDeadline = true;
+      deadlineError.partialResults = allResults;
+      deadlineError.remainingRange = { startDay, endDay: currentEnd, chunkSizeIndex: currentChunkIndex };
+      throw deadlineError;
+    }
+
+    const currentChunkSize = CHUNK_SIZES[currentChunkIndex];
+    const currentStart = Math.max(startDay, currentEnd - currentChunkSize);
+    const timeoutMs = CHUNK_TIMEOUTS[currentChunkSize] || 10000;
+
+    try {
+      const fetchStart = Date.now();
+      // Call single-org lightweight fetch directly (not _fetchExecutionsChunkLightweight which routes to sliding window)
+      const chunkExecutions = await this._fetchExecutionsChunkSingleLightweight(currentStart, currentEnd, workflowId, [orgId], { timeout: timeoutMs, ...options });
+      const elapsed = Date.now() - fetchStart;
+
+      if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
+        currentChunkIndex++;
+      }
+
+      allResults.push(...chunkExecutions);
+      currentEnd = currentStart;
+
+    } catch (error) {
+      if (currentChunkIndex < CHUNK_SIZES.length - 1) {
+        currentChunkIndex++;
+      } else {
+        this._error(`Failed to fetch org ${orgId.slice(0, 8)} (lightweight) at minimum chunk size. Skipping remaining days.`, error);
+        currentEnd = startDay; // Skip remaining
+      }
+    }
+
     if (currentEnd > startDay) {
       await new Promise(resolve => setTimeout(resolve, 50));
     }
@@ -5119,7 +5749,50 @@ async _fetchChunkAdaptiveLightweight(startDay, endDay, chunkSizeIndex, workflowI
     this._triggerCache = null;
     this._formCache = null;
     this._baseUrl = null;
+    this._unsafeWorkflowIds = null;  // Clear the unsafe workflow cache too
     this._log('Reference cache cleared');
+  }
+
+  /**
+   * Get Set of workflow IDs that have "unsafe" triggers (Form Submission or App Platform)
+   * These workflows require conductor.input to properly detect trigger type
+   * Cron Job, Webhook, and Integration triggers can be inferred without conductor.input
+   * @private
+   * @returns {Set<string>} Set of workflow IDs that need full query
+   */
+  _getUnsafeWorkflowIds() {
+    // Return cached if available
+    if (this._unsafeWorkflowIds) {
+      return this._unsafeWorkflowIds;
+    }
+
+    // Build from trigger cache
+    this._unsafeWorkflowIds = new Set();
+
+    if (!this._triggerCache) {
+      this._log('⚠️ _triggerCache not available - cannot identify unsafe workflows');
+      return this._unsafeWorkflowIds;
+    }
+
+    // Scan all triggers to find workflows with Form Submission or App Platform triggers
+    const UNSAFE_TRIGGER_TYPES = ['Form Submission', 'App Platform'];
+
+    for (const [triggerId, trigger] of this._triggerCache) {
+      const triggerTypeName = trigger.triggerType?.name || '';
+      const triggerTypeRef = trigger.triggerType?.ref || '';
+
+      // Check if this is an unsafe trigger type
+      const isUnsafe = UNSAFE_TRIGGER_TYPES.some(type =>
+        triggerTypeName.includes(type) || triggerTypeRef.includes(type.toLowerCase().replace(' ', '_'))
+      );
+
+      if (isUnsafe && trigger.workflowId) {
+        this._unsafeWorkflowIds.add(trigger.workflowId);
+      }
+    }
+
+    this._log(`📋 Identified ${this._unsafeWorkflowIds.size} 'unsafe' workflows (Form/App Platform triggers) out of ~${this._triggerCache.size} total triggers`);
+    return this._unsafeWorkflowIds;
   }
 
 /**
@@ -11618,7 +12291,11 @@ async function initializeAdvancedFilters() {
         document.getElementById('refresh-dashboard').addEventListener('click', async () => {
           debugLog('🔄 Manual refresh triggered');
           await loadDashboard(true);
-          RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+          // Only show success if no background processing needed
+          const hasBackgroundWork = rewst._failedOrgBatchRetry?.orgIds?.length > 0 || rewst._failedExecutionIds?.length > 0;
+          if (!hasBackgroundWork) {
+            RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+          }
         });
         
         document.getElementById('open-filter-drawer').addEventListener('click', () => {
@@ -12216,17 +12893,28 @@ function stopMorphAnimation() {
           if (hasFailedTriggerInfo || hasFailedOrgBatches) {
             const failedCount = rewst._failedExecutionIds?.length || 0;
             const failedOrgs = rewst._failedOrgBatchRetry?.orgIds?.length || 0;
-            debugLog(`🔄 Background retry: ${failedCount} trigger info, ${failedOrgs} org batches...`);
+            debugLog(`🔄 Background continue: ${failedCount} trigger info, ${failedOrgs} org batches...`);
 
-            // Show progress indicator in bottom-left if we have failed orgs
+            // Show info toast when we have partial data and need to continue in background
+            if (failedOrgs > 0) {
+              RewstDOM.showInfo('Processing remaining data in background');
+            }
+
+            // Show progress indicator in bottom-left if we have orgs to continue
             let progressIndicator = null;
             if (failedOrgs > 0) {
               progressIndicator = document.createElement('div');
               progressIndicator.id = 'retry-progress-indicator';
-              progressIndicator.className = 'fixed bottom-4 left-4 z-50 bg-gray-800 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-2';
+              progressIndicator.className = 'fixed bottom-4 left-4 z-50 bg-gray-800 text-white px-4 py-3 rounded-lg shadow-lg';
+              progressIndicator.style.minWidth = '250px';
               progressIndicator.innerHTML = `
-                <span class="animate-pulse text-rewst-teal">●</span>
-                <span id="retry-progress-text">Retrying: 0/${failedOrgs} orgs...</span>
+                <div class="flex items-center gap-2 mb-2">
+                  <span class="animate-pulse text-rewst-teal">●</span>
+                  <span id="retry-progress-text">Continuing: 1/${failedOrgs} orgs</span>
+                </div>
+                <div class="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+                  <div class="h-full bg-rewst-teal rounded-full progress-pulse-slow"></div>
+                </div>
               `;
               document.body.appendChild(progressIndicator);
             }
@@ -12238,7 +12926,7 @@ function stopMorphAnimation() {
               onProgress: ({ completed, total }) => {
                 const textEl = document.getElementById('retry-progress-text');
                 if (textEl) {
-                  textEl.textContent = `Retrying: ${completed}/${total} orgs...`;
+                  textEl.textContent = `Continuing: ${completed}/${total} orgs`;
                 }
               }
             }).then(async result => {
@@ -12366,7 +13054,11 @@ function stopMorphAnimation() {
       document.getElementById('refresh-dashboard').addEventListener('click', async () => {
         debugLog('🔄 Manual refresh triggered');
         await loadDashboard(true); // Force refresh = true
-        RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+        // Only show success if no background processing needed
+        const hasBackgroundWork = rewst._failedOrgBatchRetry?.orgIds?.length > 0 || rewst._failedExecutionIds?.length > 0;
+        if (!hasBackgroundWork) {
+          RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
+        }
       });
 
       // Sub-workflow load button event listener
