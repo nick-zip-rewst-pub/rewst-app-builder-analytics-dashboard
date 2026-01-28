@@ -39,13 +39,13 @@
       animation: progressPulse 0.8s ease-in-out infinite;
     }
 
-    /* Slower pulse for sub-workflow loading - same as main but slower */
+    /* Slower pulse for background retry - snaps back like main loading */
     @keyframes progressPulseSlow {
       0% { width: 15%; }
       100% { width: 60%; }
     }
     .progress-pulse-slow {
-      animation: progressPulseSlow 1.8s ease-out infinite;
+      animation: progressPulseSlow 1.2s ease-in-out infinite;
     }
 
     /* Enriching pulse animation - slowly moves to 100% without looping */
@@ -1830,11 +1830,7 @@ async function initializeAdvancedFilters() {
         document.getElementById('refresh-dashboard').addEventListener('click', async () => {
           debugLog('🔄 Manual refresh triggered');
           await loadDashboard(true);
-          // Only show success if no background processing needed
-          const hasBackgroundWork = rewst._failedOrgBatchRetry?.orgIds?.length > 0 || rewst._failedExecutionIds?.length > 0;
-          if (!hasBackgroundWork) {
-            RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
-          }
+          // Success/processing toast is shown inside loadDashboard
         });
         
         document.getElementById('open-filter-drawer').addEventListener('click', () => {
@@ -2497,24 +2493,18 @@ function stopMorphAnimation() {
                 needsRerender = true;
               }
 
-              // Remove progress indicator and show completion
+              // Remove progress indicator and show completion toast
               const indicator = document.getElementById('retry-progress-indicator');
-              if (indicator) {
-                const recovered = result.recoveredExecutions?.length || 0;
-                const skipped = rewst._abandonedOrgs?.length || 0;
-                if (recovered > 0 || skipped > 0) {
-                  // Show brief completion message before fading
-                  let msg = '';
-                  if (recovered > 0) msg += `+${recovered} recovered`;
-                  if (skipped > 0) msg += (msg ? ', ' : '') + `${skipped} skipped`;
-                  indicator.innerHTML = `
-                    <span class="text-green-400">✓</span>
-                    <span>${msg}</span>
-                  `;
-                  setTimeout(() => indicator.remove(), 3000);
-                } else {
-                  indicator.remove();
-                }
+              const recovered = result.recoveredExecutions?.length || 0;
+              const skipped = rewst._abandonedOrgs?.length || 0;
+
+              if (indicator) indicator.remove();
+
+              // Show success toast if we recovered data
+              if (recovered > 0) {
+                RewstDOM.showSuccess('Background data merged successfully');
+              } else if (skipped > 0) {
+                RewstDOM.showWarning(`${skipped} org(s) could not be loaded`);
               }
 
               if (needsRerender && pages[currentPage]) {
@@ -2593,11 +2583,7 @@ function stopMorphAnimation() {
       document.getElementById('refresh-dashboard').addEventListener('click', async () => {
         debugLog('🔄 Manual refresh triggered');
         await loadDashboard(true); // Force refresh = true
-        // Only show success if no background processing needed
-        const hasBackgroundWork = rewst._failedOrgBatchRetry?.orgIds?.length > 0 || rewst._failedExecutionIds?.length > 0;
-        if (!hasBackgroundWork) {
-          RewstDOM.showSuccess('Dashboard and cache refreshed with latest ' + DAYS_TO_FETCH + ' day data');
-        }
+        // Success/processing toast is shown inside loadDashboard
       });
 
       // Sub-workflow load button event listener

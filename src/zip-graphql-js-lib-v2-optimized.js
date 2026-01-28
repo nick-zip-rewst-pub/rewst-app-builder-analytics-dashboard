@@ -1310,7 +1310,7 @@ class RewstApp {
   static ORG_BATCH_SIZE = 5;
   static ORG_SLIDING_THRESHOLD = 10;  // Use sliding window if ≤10 orgs
   static ORG_WINDOW_SIZE = 3;         // Process 3 orgs at a time (staggered parallel)
-  static MAX_SLIDING_WINDOW_MS = 60000; // Max time for sliding window phase (60s) - then render with what we have
+  static MAX_SLIDING_WINDOW_MS = 90000; // Max time for sliding window phase (90s) - then render with what we have
 
   // Workflow scope filter: 'parents' | 'subs' | 'both'
   static WORKFLOW_SCOPE = 'parents';  // Default: parents only (fast load)
@@ -1339,14 +1339,16 @@ class RewstApp {
     0.1: 20000   // 20 seconds for 0.1-day chunks (~2.4 hours)
   };
   // RETRY-SPECIFIC: Same chunk sizes as regular fetch so we don't abandon busy orgs too early
-  static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1];  // Start at 3 days (skip 6), go down to 0.1d
+  // Goes down to 0.05d (1.2 hours) for very busy orgs - smaller than main fetch
+  static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1, 0.05];  // Start at 3 days, go down to 0.05d (1.2 hours)
   static RETRY_CHUNK_TIMEOUTS = {
     3: 15000,    // 15 seconds for 3-day chunks
     2: 15000,    // 15 seconds for 2-day chunks
     1: 20000,    // 20 seconds for 1-day chunks
-    0.5: 25000,  // 25 seconds for 0.5-day chunks
-    0.25: 30000, // 30 seconds for 0.25-day chunks
-    0.1: 45000   // 45 seconds for 0.1-day chunks (last resort)
+    0.5: 20000,  // 20 seconds for 0.5-day chunks
+    0.25: 25000, // 25 seconds for 0.25-day chunks
+    0.1: 25000,  // 25 seconds for 0.1-day chunks (~2.4 hours)
+    0.05: 25000  // 25 seconds for 0.05-day chunks (~1.2 hours) - last resort
   };
 
   /**
@@ -1541,9 +1543,15 @@ class RewstApp {
           this._log(`   [RETRY] ⚠️ Failed, trying ${smallerSize}-day chunks...`);
           currentChunkIndex++;
         } else {
-          // At 0.1-day (2.4 hour) minimum - give up on this range
-          this._log(`   [RETRY] ❌ Failed at 0.1-day minimum - giving up on days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)}`);
-          throw new Error(`RETRY_ABANDONED: Could not fetch days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} even at 0.1-day chunks`);
+          // At 0.05-day (1.2 hour) minimum - skip this range and continue with the rest
+          this._log(`   [RETRY] ⚠️ Skipping days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} (failed at 0.05d minimum) - continuing with remaining time ranges`);
+          // Track skipped range for debugging
+          if (!this._skippedTimeRanges) this._skippedTimeRanges = [];
+          this._skippedTimeRanges.push({ startDay: currentStart, endDay: currentEnd, orgIds });
+          // Move to next chunk - STAY at smallest chunk size (don't reset to 0)
+          currentEnd = currentStart;
+          // Keep currentChunkIndex at the smallest size - if this org is busy, smaller chunks are needed
+          continue;
         }
       }
 
@@ -1654,9 +1662,15 @@ class RewstApp {
           this._log(`   [RETRY-LITE] ⚠️ Failed, trying ${smallerSize}-day chunks...`);
           currentChunkIndex++;
         } else {
-          // At minimum chunk size - give up
-          this._log(`   [RETRY-LITE] ❌ Failed at minimum chunk size - giving up on days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)}`);
-          throw new Error(`RETRY_ABANDONED: Could not fetch days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} even at minimum chunks`);
+          // At 0.05-day (1.2 hour) minimum - skip this range and continue with the rest
+          this._log(`   [RETRY-LITE] ⚠️ Skipping days ${currentStart.toFixed(1)}-${currentEnd.toFixed(1)} (failed at 0.05d minimum) - continuing with remaining time ranges`);
+          // Track skipped range for debugging
+          if (!this._skippedTimeRanges) this._skippedTimeRanges = [];
+          this._skippedTimeRanges.push({ startDay: currentStart, endDay: currentEnd, orgIds });
+          // Move to next chunk - STAY at smallest chunk size (don't reset to 0)
+          currentEnd = currentStart;
+          // Keep currentChunkIndex at the smallest size - if this org is busy, smaller chunks are needed
+          continue;
         }
       }
 
@@ -1811,25 +1825,56 @@ class RewstApp {
         this._log(`⏱️ Global deadline hit - returning ${error.partialResults?.length || 0} partial results`);
         allExecutions = error.partialResults || [];
 
-        // Queue any deadline-failed orgs for background retry
+        // Store in _failedOrgBatchRetry for retryFailedOrgBatches() to pick up
+        if (!this._failedOrgBatchRetry) {
+          this._failedOrgBatchRetry = {
+            orgIds: [],
+            chunks: [],
+            workflowId,
+            options: { ...options, timeout: 30000 }
+          };
+        }
+
+        // CRITICAL FIX: When deadline hits mid-time-range, ALL orgs need the remaining time range
+        // Not just the orgs that were in the sliding window queue
+        const remainingRange = error.remainingRange;
+        if (remainingRange && remainingRange.startDay < remainingRange.endDay) {
+          // Queue ALL orgs for the remaining time range (e.g., days 0-3 that got cut off)
+          const allOrgIds = orgIds || [this.orgId];
+          this._log(`📋 DEADLINE: Queueing ALL ${allOrgIds.length} org(s) for remaining time range days ${remainingRange.startDay}-${remainingRange.endDay}`);
+
+          for (const orgId of allOrgIds) {
+            // Check if this org already has a chunk for this range
+            const existingChunk = this._failedOrgBatchRetry.chunks.find(
+              c => c.orgId === orgId && c.daysAgoStart === remainingRange.startDay && c.daysAgoEnd === remainingRange.endDay
+            );
+            if (!existingChunk) {
+              if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+                this._failedOrgBatchRetry.orgIds.push(orgId);
+              }
+              this._failedOrgBatchRetry.chunks.push({
+                orgId,
+                daysAgoStart: remainingRange.startDay,
+                daysAgoEnd: remainingRange.endDay
+              });
+            }
+          }
+        }
+
+        // Also queue any orgs that individually failed (from sliding window) for FULL retry
         if (deadlineFailedOrgs.size > 0) {
           const failedOrgIds = Array.from(deadlineFailedOrgs);
-          this._log(`📋 Queueing ${failedOrgIds.length} deadline-failed org(s) for background retry: ${failedOrgIds.join(', ')}`);
+          this._log(`📋 Additionally queueing ${failedOrgIds.length} sliding-window-failed org(s) for full retry`);
 
-          // Store in _failedOrgBatchRetry for retryFailedOrgBatches() to pick up
-          if (!this._failedOrgBatchRetry) {
-            this._failedOrgBatchRetry = {
-              orgIds: [],
-              chunks: [],
-              workflowId,
-              options: { ...options, timeout: 30000 }
-            };
-          }
-
-          // Add all deadline-failed orgs - they'll be retried for the full time range
           for (const orgId of failedOrgIds) {
-            if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
-              this._failedOrgBatchRetry.orgIds.push(orgId);
+            // These orgs failed completely, so retry the full range
+            const existingFullChunk = this._failedOrgBatchRetry.chunks.find(
+              c => c.orgId === orgId && c.daysAgoStart === 0 && c.daysAgoEnd === (daysBack || 30)
+            );
+            if (!existingFullChunk) {
+              if (!this._failedOrgBatchRetry.orgIds.includes(orgId)) {
+                this._failedOrgBatchRetry.orgIds.push(orgId);
+              }
               this._failedOrgBatchRetry.chunks.push({
                 orgId,
                 daysAgoStart: 0,
@@ -1848,7 +1893,8 @@ class RewstApp {
           this._failedExecutionIds = result.failedIds;
         }
 
-        this._log(`Retrieved ${allExecutions.length} execution(s) (partial - deadline hit, ${deadlineFailedOrgs.size} orgs queued for retry)`);
+        const totalChunks = this._failedOrgBatchRetry?.chunks?.length || 0;
+        this._log(`Retrieved ${allExecutions.length} execution(s) (partial - deadline hit, ${totalChunks} org-chunks queued for retry)`);
         return allExecutions;
       }
 
