@@ -535,7 +535,7 @@
         </h3>
         <select id="adoption-chart-left-selector" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:border-rewst-teal">
           <option value="forms">Most Popular Forms</option>
-          <option value="timeline">Submissions Over Time</option>
+          <option value="users">Top Users by Form</option>
         </select>
       </div>
       <div id="adoption-chart-left"></div>
@@ -549,8 +549,9 @@
           <span id="adoption-doughnut-title">Form Submissions per Org</span>
         </h3>
         <select id="adoption-doughnut-selector" class="px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:border-rewst-teal">
-          <option value="submissions">Form Submissions</option>
-          <option value="time">Time Saved</option>
+          <option value="submissions">By Organization</option>
+          <option value="users">By User</option>
+          <option value="time">Time Saved by Org</option>
         </select>
       </div>
       <div id="adoption-chart-right"></div>
@@ -560,6 +561,7 @@
   <!-- Table Section -->
   <div class="space-y-6">
     <div id="adoption-table-orgs"></div>
+    <div id="adoption-table-users"></div>
   </div>
 
 </div>

@@ -217,6 +217,66 @@ function renderAdoptionDashboard() {
     activeDays: Object.keys(org.dailyActivity).length
   }));
 
+  // ============================================================
+  // USER STATS AGGREGATION (following same pattern as orgStats)
+  // ============================================================
+
+  const userStats = {};
+
+  // Accumulate user-level metrics from executions
+  formExecutions.forEach(exec => {
+    const userEmail = exec.user?.username || exec.triggerInfo?.user?.username || exec.user?.email || exec.triggerInfo?.user?.email || 'Unknown';
+    const orgName = exec.organization?.name || exec.triggerInfo?.organization?.name || 'Unknown';
+
+    if (!userStats[userEmail]) {
+      userStats[userEmail] = {
+        email: userEmail,
+        orgName: orgName,
+        formSubmissions: 0,
+        timeSaved: 0,
+        uniqueForms: new Set(),
+        formCounts: {} // Track count per form for stacked bar chart
+      };
+    }
+
+    userStats[userEmail].formSubmissions++;
+    userStats[userEmail].timeSaved += (exec.workflow?.humanSecondsSaved || 0);
+
+    const formId = getFormId(exec);
+    const formName = getFormName(exec);
+
+    if (formId) {
+      userStats[userEmail].uniqueForms.add(formId);
+
+      // Track per-form submission counts for stacked bar chart
+      if (!userStats[userEmail].formCounts[formName]) {
+        userStats[userEmail].formCounts[formName] = 0;
+      }
+      userStats[userEmail].formCounts[formName]++;
+    }
+  });
+
+  // Convert to array with calculated fields
+  const userArray = Object.values(userStats).map(user => ({
+    email: user.email,
+    organization: user.orgName,
+    form_submissions: user.formSubmissions,
+    time_saved: formatTimeSaved(user.timeSaved),
+    unique_forms: user.uniqueForms.size,
+    formCounts: user.formCounts
+  }));
+
+  // Sort by submissions descending
+  userArray.sort((a, b) => b.form_submissions - a.form_submissions);
+
+  // Get top user
+  const topUser = userArray.length > 0 ? userArray[0] : null;
+
+  // Get top org
+  const topOrg = orgArray.length > 0
+    ? [...orgArray].sort((a, b) => b.formSubmissions - a.formSubmissions)[0]
+    : null;
+
   const totalOrgs = orgArray.length;
   const activeOrgs = orgArray.filter(org => org.formSubmissions > 0).length;
   const adoptionRate = totalOrgs > 0 ? ((activeOrgs / totalOrgs) * 100).toFixed(1) : 0;
@@ -241,9 +301,9 @@ function renderAdoptionDashboard() {
   
   // Top Row - solid backgrounds
   RewstDOM.loadMetricCard("#adoption-metric-total-orgs", {
-    title: "Total Organizations",
-    subtitle: `In selected scope`,
-    value: totalOrgs.toLocaleString(),
+    title: "Top Organization",
+    subtitle: topOrg ? topOrg.name : "No data",
+    value: topOrg ? topOrg.formSubmissions.toLocaleString() : "0",
     icon: "business",
     color: "teal",
     solidBackground: true
@@ -270,10 +330,10 @@ function renderAdoptionDashboard() {
 
   // Bottom Row - accent backgrounds
   RewstDOM.loadMetricCard("#adoption-metric-avg-forms", {
-    title: "Avg Forms per Org",
-    subtitle: "Unique forms submitted",
-    value: avgFormsPerOrg,
-    icon: "dynamic_form",
+    title: "Top User",
+    subtitle: topUser ? topUser.email : "No data",
+    value: topUser ? topUser.form_submissions.toLocaleString() : "0",
+    icon: "person",
     color: "teal",
     cardClass: "card card-accent-teal",
     solidBackground: false
@@ -572,14 +632,121 @@ function renderAdoptionDashboard() {
   };
 
   // Initial render - bar chart (most popular forms)
+  const renderUserStackedBarChart = () => {
+    // Get top 10 users by submission count
+    const top10Users = userArray.slice(0, 10);
+
+    // Collect all unique form names from top 10 users
+    const allFormNames = new Set();
+    top10Users.forEach(user => {
+      Object.keys(user.formCounts).forEach(formName => {
+        allFormNames.add(formName);
+      });
+    });
+
+    const formNamesArray = Array.from(allFormNames);
+
+    // Build datasets (one per form)
+    const colors = [
+      'rgba(0, 188, 212, 0.7)',   // teal
+      'rgba(233, 30, 99, 0.7)',   // fandango
+      'rgba(255, 152, 0, 0.7)',   // orange
+      'rgba(76, 175, 80, 0.7)',   // success
+      'rgba(156, 39, 176, 0.7)',  // purple
+      'rgba(255, 193, 7, 0.7)',   // bask
+      'rgba(96, 125, 139, 0.7)',  // snooze
+      'rgba(63, 81, 181, 0.7)',   // indigo
+      'rgba(244, 67, 54, 0.7)',   // error
+      'rgba(121, 85, 72, 0.7)'    // brown
+    ];
+
+    const userLabels = top10Users.map(user => user.email);
+
+    const datasets = formNamesArray.map((formName, idx) => {
+      const data = top10Users.map(user => user.formCounts[formName] || 0);
+
+      return {
+        label: formName,
+        data: data,
+        backgroundColor: colors[idx % colors.length],
+        borderColor: colors[idx % colors.length].replace('0.7', '1'),
+        borderWidth: 1
+      };
+    });
+
+    const canvasWrapper = document.createElement('div');
+    canvasWrapper.style.position = 'relative';
+    canvasWrapper.style.height = '300px';
+
+    const canvas = document.createElement('canvas');
+    canvasWrapper.appendChild(canvas);
+
+    new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: userLabels,
+        datasets: datasets
+      },
+      options: {
+        indexAxis: 'y', // Horizontal bars (left to right)
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: {
+          mode: 'index',
+          intersect: false
+        },
+        plugins: {
+          legend: {
+            position: 'bottom',
+            align: 'center',
+            labels: {
+              padding: 12,
+              boxWidth: 12,
+              font: { size: 11 }
+            }
+          },
+          tooltip: {
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              label: (context) => {
+                return `${context.dataset.label}: ${context.parsed.x} submission${context.parsed.x !== 1 ? 's' : ''}`;
+              }
+            }
+          }
+        },
+        scales: {
+          x: {
+            stacked: true,
+            beginAtZero: true,
+            ticks: {
+              precision: 0
+            },
+            grid: { color: 'rgba(0,0,0,0.05)' }
+          },
+          y: {
+            stacked: true,
+            grid: { color: 'rgba(0,0,0,0.05)' },
+            ticks: {
+              font: { size: 10 }
+            }
+          }
+        }
+      }
+    });
+
+    document.getElementById('adoption-chart-title-left').textContent = 'Top Users by Form';
+    RewstDOM.place(canvasWrapper, '#adoption-chart-left');
+  };
+
   renderBarChart();
 
   // Left chart dropdown handler
   document.getElementById('adoption-chart-left-selector').addEventListener('change', (e) => {
     if (e.target.value === 'forms') {
       renderBarChart();
-    } else if (e.target.value === 'timeline') {
-      renderLineChart();
+    } else if (e.target.value === 'users') {
+      renderUserStackedBarChart();
     }
   });
 
@@ -821,6 +988,122 @@ function renderAdoptionDashboard() {
     RewstDOM.place(canvasWrapper, '#adoption-chart-right');
   };
 
+  const renderUserSubmissionsDoughnut = () => {
+    // Get top 10 users by submission count
+    const top10 = [...userArray]
+      .sort((a, b) => b.form_submissions - a.form_submissions)
+      .slice(0, 10);
+
+    const otherCount = userArray
+      .slice(10)
+      .reduce((sum, user) => sum + user.form_submissions, 0);
+
+    const labels = top10.map(user => user.email);
+    const data = top10.map(user => user.form_submissions);
+
+    if (otherCount > 0) {
+      labels.push('Others');
+      data.push(otherCount);
+    }
+
+    const colors = [
+      'rgba(0, 188, 212, 0.7)',
+      'rgba(233, 30, 99, 0.7)',
+      'rgba(255, 152, 0, 0.7)',
+      'rgba(76, 175, 80, 0.7)',
+      'rgba(156, 39, 176, 0.7)',
+      'rgba(255, 193, 7, 0.7)',
+      'rgba(96, 125, 139, 0.7)',
+      'rgba(63, 81, 181, 0.7)',
+      'rgba(244, 67, 54, 0.7)',
+      'rgba(121, 85, 72, 0.7)',
+      'rgba(158, 158, 158, 0.7)' // gray for "Others"
+    ];
+
+    const canvasWrapper = document.createElement('div');
+    canvasWrapper.style.position = 'relative';
+    canvasWrapper.style.height = '300px';
+
+    const canvas = document.createElement('canvas');
+    canvasWrapper.appendChild(canvas);
+
+    const totalSubmissions = data.reduce((a, b) => a + b, 0);
+
+    function formatCenterNumber(num) {
+      if (num >= 10000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 100000) return (num / 1000).toFixed(0) + 'K';
+      return num.toLocaleString();
+    }
+
+    new Chart(canvas, {
+      type: 'doughnut',
+      data: {
+        labels: labels,
+        datasets: [{
+          data: data,
+          backgroundColor: colors.slice(0, labels.length),
+          borderColor: '#ffffff',
+          borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '70%',
+        plugins: {
+          legend: {
+            position: 'right',
+            align: 'center',
+            labels: {
+              padding: 8,
+              usePointStyle: true,
+              boxWidth: 10,
+              font: { size: 11 }
+            }
+          },
+          tooltip: {
+            callbacks: {
+              label: (context) => {
+                const value = context.parsed || 0;
+                const percentage = ((value / totalSubmissions) * 100).toFixed(1);
+                return `${context.label}: ${value.toLocaleString()} (${percentage}%)`;
+              }
+            }
+          }
+        }
+      },
+      plugins: [{
+        id: 'centerText',
+        afterDraw: (chart) => {
+          const ctx = chart.ctx;
+          const centerX = (chart.chartArea.left + chart.chartArea.right) / 2;
+          const centerY = (chart.chartArea.top + chart.chartArea.bottom) / 2;
+
+          ctx.save();
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+
+          // Number
+          const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
+          ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
+          ctx.fillStyle = '#000000';
+          ctx.fillText(formatCenterNumber(totalSubmissions), centerX, centerY - 10);
+
+          // Label
+          const labelFontSize = chart.height < 250 ? 10 : 12;
+          ctx.font = `${labelFontSize}px Poppins, sans-serif`;
+          ctx.fillStyle = '#90A4AE';
+          ctx.fillText('Form Submissions', centerX, centerY + 20);
+
+          ctx.restore();
+        }
+      }]
+    });
+
+    document.getElementById('adoption-doughnut-title').textContent = 'Form Submissions per User';
+    RewstDOM.place(canvasWrapper, '#adoption-chart-right');
+  };
+
   // Initial render - form submissions doughnut
   renderFormSubmissionsDoughnut();
 
@@ -830,6 +1113,8 @@ function renderAdoptionDashboard() {
       renderFormSubmissionsDoughnut();
     } else if (e.target.value === 'time') {
       renderTimeSavedDoughnut();
+    } else if (e.target.value === 'users') {
+      renderUserSubmissionsDoughnut();
     }
   });
 
@@ -869,6 +1154,33 @@ function renderAdoptionDashboard() {
   });
 
   RewstDOM.place(table, '#adoption-table-orgs');
+
+  // ============================================================
+  // TABLE: User Submissions
+  // ============================================================
+
+  const userTable = RewstDOM.createTable(userArray, {
+    title: '<span class="material-icons text-rewst-teal">person</span> User Submissions',
+    columns: ['email', 'organization', 'form_submissions', 'time_saved', 'unique_forms'],
+    headers: {
+      email: 'User',
+      organization: 'Organization',
+      form_submissions: 'Total Submissions',
+      time_saved: 'Time Saved',
+      unique_forms: 'Unique Forms'
+    },
+    searchable: true,
+    defaultSort: {
+      column: 'form_submissions',
+      direction: 'desc'
+    },
+    transforms: {
+      form_submissions: (value) => value.toLocaleString(),
+      unique_forms: (value) => value.toLocaleString()
+    }
+  });
+
+  RewstDOM.place(userTable, '#adoption-table-users');
 
   console.log("✅ Adoption dashboard rendered successfully");
 }

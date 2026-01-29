@@ -3256,6 +3256,15 @@ async _fetchExecutionsByWorkflowChunks(workflowIds, daysBack, orgIds, options = 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   this._log(`✅ Workflow-chunked fetch complete: ${allResults.length} executions in ${elapsed}s`);
 
+  // Enrich with trigger info if requested
+  const { includeTriggerInfo, includeRawContext } = options;
+  if (includeTriggerInfo && allResults.length > 0) {
+    this._log(`Fetching trigger information for ${allResults.length} executions...`);
+    await this._buildReferenceCache();
+    const result = await this._fetchTriggerInfoBatched(allResults, includeRawContext, { timeout });
+    return result.executions;
+  }
+
   return allResults;
 }
 
