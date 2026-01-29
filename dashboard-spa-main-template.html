@@ -668,9 +668,13 @@
 
       // GLOBAL CONFIGURATION
       const DAYS_TO_FETCH = 30;
-      const CACHE_VERSION = '1.5'; // Increment this to invalidate all caches - bumped for IndexedDB migration
+      const CACHE_VERSION = '1.6'; // Increment this to invalidate all caches - bumped for auto-exclude feature
       const CACHE_DURATION = 5 * 24 * 60 * 60 * 1000; // 5 days in milliseconds
       const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
+
+      // Auto-exclude busy workflows config
+      const AUTO_EXCLUDE_THRESHOLD = 5000;  // Workflows with more executions get excluded from main fetch
+      const ALWAYS_EXCLUDE_WORKFLOW_IDS = []; // Manual overrides (add workflow IDs here to always exclude)
 
       // ============================================
       // INDEXEDDB CACHE LAYER WITH LOCALSTORAGE FALLBACK
@@ -2368,31 +2372,106 @@ function stopMorphAnimation() {
             rewst.getIntegrationConfigs()
           ]);
           debugLog(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
-          updateLoadingProgress(15, 'Fetching executions...', 'fetch'); // Start fetch pulse (15→60%)
+
+          // Phase 1.5: Get workflow stats to identify busy workflows (auto-exclude feature)
+          updateLoadingProgress(10, 'Analyzing workflow stats...');
+          const endDate = new Date().toISOString();
+          const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+          const workflowStats = await rewst.getWorkflowStatsByOrg(rewst.orgId, startDate, endDate);
+          debugLog(`📊 Workflow stats: ${workflowStats.length} workflows analyzed`);
+
+          // Show top 10 workflows by execution count for visibility
+          const sortedByExecs = [...workflowStats].sort((a, b) => b.totalExecutions - a.totalExecutions);
+          debugLog(`📊 Top 10 workflows by execution count:`);
+          sortedByExecs.slice(0, 10).forEach((w, i) => {
+            const marker = w.totalExecutions > AUTO_EXCLUDE_THRESHOLD ? '🚫' : '✅';
+            debugLog(`   ${i + 1}. ${marker} ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+          });
+
+          // Identify busy workflows that exceed threshold
+          const busyWorkflows = workflowStats.filter(w => w.totalExecutions > AUTO_EXCLUDE_THRESHOLD);
+          const excludeWorkflowIds = [
+            ...busyWorkflows.map(w => w.id),
+            ...ALWAYS_EXCLUDE_WORKFLOW_IDS
+          ];
+
+          debugLog(`📊 Threshold: ${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions`);
+          if (excludeWorkflowIds.length > 0) {
+            debugLog(`📋 Busy workflows (>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions):`);
+            busyWorkflows.forEach(w => {
+              debugLog(`   • ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+            });
+          } else {
+            debugLog(`✅ No workflows exceed threshold`);
+          }
 
           // Workflow scope: 'parents' | 'subs' | 'both'
           // Start with parents only for fast initial load (~15s)
           // User can load sub-workflows on-demand via button (see bottom-left UI)
           RewstApp.WORKFLOW_SCOPE = 'parents';
 
-          // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
-          const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
-            timeout: 10000,
+          // Phase 2: PARALLEL FETCH - Forms + everything else at the same time
+          const formWorkflowIds = workflows
+            .filter(w => w.triggers?.some(t =>
+              t.triggerType?.name?.toLowerCase().includes('form')
+            ))
+            .map(w => w.id);
+
+          updateLoadingProgress(15, 'Fetching executions...', 'fetch');
+          debugLog(`🚀 Phase 2: Parallel fetch - ${formWorkflowIds.length} forms + ${workflows.length - formWorkflowIds.length} other workflows`);
+
+          // Fire both requests in parallel
+          const formPromise = formWorkflowIds.length > 0
+            ? rewst.getRecentExecutions(true, days, null, false, orgIds, {
+                timeout: 45000,
+                priorityWorkflowIds: formWorkflowIds,
+                includeOnlyWorkflowIds: formWorkflowIds
+              })
+            : Promise.resolve([]);
+
+          const restPromise = rewst.getRecentExecutions(true, days, null, false, orgIds, {
+            timeout: 60000,
+            excludeWorkflowIds: formWorkflowIds.length > 0 ? formWorkflowIds : undefined,
             onProgress: ({ phase, completed, total, status }) => {
               if (phase === 'batches' && total > 0) {
-                // Map batch progress to 15-85% of the bar (stop pulse, batches provide real progress)
+                // Map batch progress to 15-85% of the bar
                 const batchPercent = 15 + Math.round((completed / total) * 70);
                 updateLoadingProgress(batchPercent, `Fetching: ${completed}/${total} batches...`);
               } else if (phase === 'enriching') {
-                updateLoadingProgress(60, 'Enriching data...', 'enrich'); // Start enrich pulse (60→100%)
+                updateLoadingProgress(85, 'Enriching data...', 'enrich');
               } else if (phase === 'complete') {
                 updateLoadingProgress(100, 'Complete!');
               }
             }
           });
-          debugLog(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
 
-          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs };
+          // Wait for both to complete
+          const [formExecutions, allExecutions] = await Promise.all([formPromise, restPromise]);
+
+          debugLog(`✅ Parallel fetch complete: ${formExecutions.length} forms, ${allExecutions.length} others`);
+
+          // Merge: dedupe by execution ID (safety check in case filtering fails)
+          const mergedExecutions = [...formExecutions, ...allExecutions];
+          let executions = _.uniqBy(mergedExecutions, 'id');
+
+          const duplicateCount = mergedExecutions.length - executions.length;
+          if (duplicateCount > 0) {
+            debugLog(`⚠️ Removed ${duplicateCount} duplicate executions during merge`);
+          }
+          debugLog(`📈 Total: ${executions.length} executions after merge`);
+
+          // Store excluded workflows with their stats (for dashboard display)
+          const excludedWorkflows = busyWorkflows.map(w => ({
+            id: w.id,
+            name: w.name,
+            totalExecutions: w.totalExecutions,
+            totalTasks: w.totalTasks,
+            numSucceededTasks: w.numSucceededTasks,
+            totalHumanSecondsSaved: w.totalHumanSecondsSaved,
+            isStatsOnly: true  // Flag to indicate this is aggregate-only data
+          }));
+
+          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs, excludedWorkflows, workflowStats };
 
           // Store globally
           window.dashboardData = freshData;

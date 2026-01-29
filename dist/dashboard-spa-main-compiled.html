@@ -3555,7 +3555,7 @@ class RewstApp {
   static ORG_BATCH_SIZE = 5;
   static ORG_SLIDING_THRESHOLD = 10;  // Use sliding window if ≤10 orgs
   static ORG_WINDOW_SIZE = 3;         // Process 3 orgs at a time (staggered parallel)
-  static MAX_SLIDING_WINDOW_MS = 90000; // Max time for sliding window phase (90s) - then render with what we have
+  static MAX_SLIDING_WINDOW_MS = 60000; // Max time for sliding window phase (60s) - then render with what we have
 
   // Workflow scope filter: 'parents' | 'subs' | 'both'
   static WORKFLOW_SCOPE = 'parents';  // Default: parents only (fast load)
@@ -3573,27 +3573,28 @@ class RewstApp {
   }
 
   static EXCLUDE_SUB_WORKFLOWS_FOR_ORGS = []; // Array of org IDs to exclude from sub-workflow fetch
-  // Progressive TIMEOUTS - parallel org batching allows longer timeouts without blocking
+  // Progressive TIMEOUTS - SHORTER for main fetch to respect 60s global deadline
+  // Retry timeouts are longer since they run in background
   static CHUNK_TIMEOUTS = {
-    6: 10000,    // 10 seconds for 6-day chunks
+    6: 10000,    // 10 seconds for 6-day chunks (fail fast to hit deadline)
     3: 10000,    // 10 seconds for 3-day chunks
     2: 10000,    // 10 seconds for 2-day chunks
-    1: 10000,    // 10 seconds for 1-day chunks
-    0.5: 20000,  // 20 seconds for 0.5-day chunks (12 hours)
-    0.25: 20000, // 20 seconds for 0.25-day chunks (6 hours)
-    0.1: 20000   // 20 seconds for 0.1-day chunks (~2.4 hours)
+    1: 12000,    // 12 seconds for 1-day chunks
+    0.5: 15000,  // 15 seconds for 0.5-day chunks (12 hours)
+    0.25: 15000, // 15 seconds for 0.25-day chunks (6 hours)
+    0.1: 15000   // 15 seconds for 0.1-day chunks (~2.4 hours)
   };
   // RETRY-SPECIFIC: Same chunk sizes as regular fetch so we don't abandon busy orgs too early
   // Goes down to 0.05d (1.2 hours) for very busy orgs - smaller than main fetch
   static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1, 0.05];  // Start at 3 days, go down to 0.05d (1.2 hours)
   static RETRY_CHUNK_TIMEOUTS = {
-    3: 15000,    // 15 seconds for 3-day chunks
-    2: 15000,    // 15 seconds for 2-day chunks
-    1: 20000,    // 20 seconds for 1-day chunks
-    0.5: 20000,  // 20 seconds for 0.5-day chunks
-    0.25: 25000, // 25 seconds for 0.25-day chunks
-    0.1: 25000,  // 25 seconds for 0.1-day chunks (~2.4 hours)
-    0.05: 25000  // 25 seconds for 0.05-day chunks (~1.2 hours) - last resort
+    3: 20000,    // 20 seconds for 3-day chunks
+    2: 20000,    // 20 seconds for 2-day chunks
+    1: 25000,    // 25 seconds for 1-day chunks
+    0.5: 30000,  // 30 seconds for 0.5-day chunks (12 hours)
+    0.25: 35000, // 35 seconds for 0.25-day chunks (6 hours)
+    0.1: 45000,  // 45 seconds for 0.1-day chunks (2.4 hours)
+    0.05: 60000  // 60 seconds for 0.05-day chunks (1.2 hours) - last resort for very slow orgs
   };
 
   /**
@@ -3603,8 +3604,9 @@ class RewstApp {
    * @private
    */
   async _fetchChunkAdaptive(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
-    const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
-    const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+    // Allow custom chunk sizes via options (for workflow-chunking with larger initial chunks)
+    const CHUNK_SIZES = options.chunkSizes || RewstApp.CHUNK_SIZES;
+    const CHUNK_TIMEOUTS = options.chunkTimeouts || RewstApp.CHUNK_TIMEOUTS;
     // Use globalDeadline (from getRecentExecutions) if provided, else fall back to per-chunk deadline
     const { globalDeadline, deadline, deadlineFailedOrgs } = options;
     const effectiveDeadline = globalDeadline || deadline;
@@ -3688,8 +3690,9 @@ class RewstApp {
    * @private
    */
   async _fetchChunkAdaptiveSingleOrg(startDay, endDay, chunkSizeIndex, workflowId, orgId, allResults = [], options = {}) {
-    const CHUNK_SIZES = RewstApp.CHUNK_SIZES;
-    const CHUNK_TIMEOUTS = RewstApp.CHUNK_TIMEOUTS;
+    // Allow custom chunk sizes via options (for workflow-chunking with larger initial chunks)
+    const CHUNK_SIZES = options.chunkSizes || RewstApp.CHUNK_SIZES;
+    const CHUNK_TIMEOUTS = options.chunkTimeouts || RewstApp.CHUNK_TIMEOUTS;
     const { deadline } = options;
 
     let currentEnd = endDay;
@@ -3751,7 +3754,7 @@ class RewstApp {
    * Used by background retry - starts smaller but goes all the way down to catch busy orgs
    * @private
    */
-  async _fetchChunkAdaptiveRetry(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = []) {
+  async _fetchChunkAdaptiveRetry(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
     const CHUNK_SIZES = RewstApp.RETRY_CHUNK_SIZES;  // [3, 2, 1, 0.5, 0.25, 0.1] - goes down to 0.1 day
     const CHUNK_TIMEOUTS = RewstApp.RETRY_CHUNK_TIMEOUTS;
 
@@ -3770,7 +3773,7 @@ class RewstApp {
         // IMPORTANT: Call _fetchExecutionsChunkSingle directly, NOT _fetchExecutionsChunk
         // _fetchExecutionsChunk routes to sliding window which has a 60s global deadline
         // Retry should run indefinitely without a deadline - it's the background task
-        const chunkExecutions = await this._fetchExecutionsChunkSingle(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs });
+        const chunkExecutions = await this._fetchExecutionsChunkSingle(currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options });
         const elapsed = Date.now() - fetchStart;
 
         if (elapsed > timeoutMs && currentChunkIndex < CHUNK_SIZES.length - 1) {
@@ -3817,7 +3820,7 @@ class RewstApp {
    * This dramatically reduces data transfer for busy orgs where 99%+ of executions are Cron/Webhook
    * @private
    */
-  async _fetchChunkAdaptiveRetryLightweight(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = []) {
+  async _fetchChunkAdaptiveRetryLightweight(startDay, endDay, chunkSizeIndex, workflowId, orgIds, allResults = [], options = {}) {
     const CHUNK_SIZES = RewstApp.RETRY_CHUNK_SIZES;
     const CHUNK_TIMEOUTS = RewstApp.RETRY_CHUNK_TIMEOUTS;
 
@@ -3839,7 +3842,7 @@ class RewstApp {
 
         // PASS 1: Lightweight query (no conductor.input, no workflow.triggers)
         const lightweightExecutions = await this._fetchExecutionsChunkSingleLightweight(
-          currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs }
+          currentStart, currentEnd, workflowId, orgIds, { timeout: timeoutMs, ...options }
         );
         const pass1Elapsed = Date.now() - fetchStart;
 
@@ -3938,6 +3941,20 @@ class RewstApp {
     const timeRangeMsg = daysBack ? `from last ${daysBack} day(s)` : 'from all time';
     this._log(`Fetching executions ${timeRangeMsg}...`);
 
+    // FAST PATH: If priorityWorkflowIds provided, use workflow-chunking with adaptive day ranges
+    // This is MUCH faster than org-based chunking for specific workflows (e.g., forms)
+    // - Chunks workflows into groups (default 10 per request)
+    // - Tries large day ranges first (30, 14, 6, 3, 1 days) with adaptive fallback
+    // - Processes chunks in parallel (default 6 concurrent)
+    // Example: 57 forms → 6 requests instead of 100+ with org chunking
+    if (options.priorityWorkflowIds && options.priorityWorkflowIds.length > 0) {
+      return this._fetchExecutionsByWorkflowChunks(options.priorityWorkflowIds, daysBack, orgIds, {
+        ...options,
+        includeTriggerInfo,
+        includeRawContext
+      });
+    }
+
     // Create a GLOBAL deadline for the entire fetch operation
     // This spans all time chunks and all orgs - prevents one org from hogging 60s per chunk
     const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
@@ -3973,12 +3990,14 @@ class RewstApp {
 
         if (daysBack && daysBack > 0) {
           allExecutions = await this._fetchChunkAdaptive(0, daysBack, 0, workflowId, orgIds, [], {
+            ...options,
             globalDeadline,
             deadlineFailedOrgs,
             originalDaysBack  // Pass full range so failed orgs retry ALL days, not just the chunk they failed on
           });
         } else {
           allExecutions = await this._fetchExecutionsChunk(null, null, workflowId, orgIds, {
+            ...options,
             timeout: timeoutMs,
             globalDeadline,
             deadlineFailedOrgs,
@@ -3999,6 +4018,7 @@ class RewstApp {
 
         if (daysBack && daysBack > 0) {
           subExecutions = await this._fetchChunkAdaptiveLightweight(0, daysBack, 0, workflowId, orgIds, [], {
+            ...options,
             scope: 'subs',
             globalDeadline,
             deadlineFailedOrgs,
@@ -4006,6 +4026,7 @@ class RewstApp {
           });
         } else {
           subExecutions = await this._fetchExecutionsChunkLightweight(null, null, workflowId, orgIds, {
+            ...options,
             timeout: timeoutMs,
             scope: 'subs',
             globalDeadline,
@@ -4678,7 +4699,7 @@ async _fetchExecutionsMultiOrgSliding(daysAgoStart, daysAgoEnd, workflowId, orgI
       // For single-org fetch within sliding window, use direct chunk fetch (no nested sliding window)
       const orgExecs = await this._fetchChunkAdaptiveSingleOrg(
         daysAgoStart, daysAgoEnd, 0, workflowId, orgId, [],
-        { timeout: 45000, deadline, ...options }  // 45s per org, pass deadline + scope
+        { ...options, timeout: 20000, deadline }  // 20s per org max (respects 60s global deadline)
       );
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -4916,7 +4937,7 @@ async _fetchExecutionsMultiOrgSlidingLightweight(daysAgoStart, daysAgoEnd, workf
       // For single-org fetch within sliding window, use direct chunk fetch (no nested sliding window)
       const orgExecs = await this._fetchChunkAdaptiveSingleOrgLightweight(
         daysAgoStart, daysAgoEnd, 0, workflowId, orgId, [],
-        { timeout: 45000, deadline, ...options }  // 45s per org, pass deadline + scope
+        { timeout: 20000, deadline, ...options }  // 20s per org max (respects 60s global deadline)
       );
 
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -5221,9 +5242,10 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
       this._log(`   🔄 Continuing org ${orgShort}... ${rangeDesc} (${useLightweight ? 'lightweight' : 'full'})`);
 
       // Use lightweight-first approach if enabled (default), otherwise full query
+      // Pass through options (includes excludeWorkflowIds for busy workflow exclusion)
       const orgResults = useLightweight
-        ? await this._fetchChunkAdaptiveRetryLightweight(range.start, range.end, 0, workflowId, [orgId], [])
-        : await this._fetchChunkAdaptiveRetry(range.start, range.end, 0, workflowId, [orgId], []);
+        ? await this._fetchChunkAdaptiveRetryLightweight(range.start, range.end, 0, workflowId, [orgId], [], options)
+        : await this._fetchChunkAdaptiveRetry(range.start, range.end, 0, workflowId, [orgId], [], options);
 
       completedCount++;
       const progress = `[${completedCount}/${orgIds.length}]`;
@@ -5392,6 +5414,153 @@ async _fetchExecutionsChunk(daysAgoStart, daysAgoEnd, workflowId, orgIds = null,
 }
 
 /**
+ * FAST PATH: Fetch executions for specific workflow IDs in parallel
+ * Each workflow is fetched separately but all requests run concurrently.
+ * Much faster than the chunked approach when you only need specific workflows.
+ *
+ * @param {string[]} workflowIds - Array of workflow IDs to fetch executions for
+ * @param {number} daysBack - Number of days to look back
+ * @param {string[]} orgIds - Org IDs to fetch for (uses parent org if null)
+ * @param {object} options - timeout, includeTriggerInfo, includeRawContext, onProgress
+ * @returns {Promise<Array>} - Combined executions from all workflows, flattened
+ * @private
+ */
+/**
+ * Fetch executions by chunking workflows - reuses existing adaptive day-chunking logic
+ * Much faster than org-based chunking for specific workflow sets (e.g., forms)
+ *
+ * Strategy:
+ * - Split workflows into chunks (default 10 per chunk, configurable via options.workflowChunkSize)
+ * - Process chunks in parallel (default 6 concurrent, configurable via options.parallelChunks)
+ * - Each chunk uses _fetchChunkAdaptive which handles: 6d → 3d → 2d → 1d → 0.5d → 0.25d → 0.1d
+ * - Fetches ALL orgs in each request (not sliding by org)
+ *
+ * Example: 57 forms with chunk size 10
+ * - Creates 6 chunks: [1-10], [11-20], [21-30], [31-40], [41-50], [51-57]
+ * - Runs 6 chunks in parallel
+ * - Each chunk adaptively breaks down time windows (covers full date range)
+ * - Total: ~6-20 requests depending on data volume vs ~100+ with org chunking
+ */
+async _fetchExecutionsByWorkflowChunks(workflowIds, daysBack, orgIds, options = {}) {
+  const { timeout = 45000, onProgress } = options;
+  const targetOrgIds = orgIds || [this.orgId];
+
+  // Configuration
+  const WORKFLOW_CHUNK_SIZE = options.workflowChunkSize || 1;   // 1 workflow per request (fire them all in parallel)
+  const PARALLEL_CHUNKS = options.parallelChunks || 20;          // Process 20 at a time (fast sliding window)
+
+  // Use larger initial chunk sizes for workflow-based fetching (forms are typically less busy)
+  // Start big, fail fast, adaptive fallback
+  const WORKFLOW_DAY_CHUNKS = [30, 10, 6, 3, 1, 0.5];
+  const WORKFLOW_DAY_TIMEOUTS = {
+    30: 5000,   // 5s for 30-day chunks (fail FAST if too much data)
+    10: 7000,   // 7s for 10-day chunks
+    6: 10000,   // 10s for 6-day chunks
+    3: 10000,   // 10s for 3-day chunks
+    1: 10000,   // 10s for 1-day chunks
+    0.5: 10000  // 10s for 0.5-day chunks
+  };
+
+  this._log(`🎯 Workflow-chunked fetch: ${workflowIds.length} workflow(s), ${daysBack} days, ${targetOrgIds.length} org(s)`);
+  this._log(`   Chunk size: ${WORKFLOW_CHUNK_SIZE} workflows/request, ${PARALLEL_CHUNKS} parallel`);
+  this._log(`   Day chunks: ${WORKFLOW_DAY_CHUNKS.join(', ')} days`);
+  const startTime = Date.now();
+
+  // Split workflows into chunks
+  const workflowChunks = [];
+  for (let i = 0; i < workflowIds.length; i += WORKFLOW_CHUNK_SIZE) {
+    workflowChunks.push(workflowIds.slice(i, i + WORKFLOW_CHUNK_SIZE));
+  }
+
+  this._log(`   Created ${workflowChunks.length} workflow chunks`);
+
+  // Process chunks with sliding window (parallel limit)
+  const allResults = [];
+  let completed = 0;
+
+  for (let i = 0; i < workflowChunks.length; i += PARALLEL_CHUNKS) {
+    const batch = workflowChunks.slice(i, i + PARALLEL_CHUNKS);
+
+    this._log(`📦 Processing workflow chunk batch ${i / PARALLEL_CHUNKS + 1}/${Math.ceil(workflowChunks.length / PARALLEL_CHUNKS)} (${batch.length} chunks)`);
+
+    // Process this batch in parallel - each workflow chunk tries adaptive day ranges with ALL orgs at once
+    const batchPromises = batch.map(chunkWorkflowIds =>
+      this._fetchWorkflowChunkWithAdaptiveDays(chunkWorkflowIds, daysBack, targetOrgIds, WORKFLOW_DAY_CHUNKS, WORKFLOW_DAY_TIMEOUTS)
+    );
+
+    const batchResults = await Promise.all(batchPromises);
+    allResults.push(...batchResults.flat());
+
+    completed += batch.length;
+    if (onProgress) {
+      const progress = Math.round((completed / workflowChunks.length) * 100);
+      onProgress({ phase: 'batches', completed, total: workflowChunks.length, status: `${progress}%` });
+    }
+  }
+
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  this._log(`✅ Workflow-chunked fetch complete: ${allResults.length} executions in ${elapsed}s`);
+
+  return allResults;
+}
+
+/**
+ * Fetch a single workflow chunk with adaptive day ranges, ALL orgs at once (no sliding window)
+ * Loops through time (30d → 14d → 6d...) and covers full date range
+ */
+async _fetchWorkflowChunkWithAdaptiveDays(workflowIds, maxDays, orgIds, dayChunks, dayTimeouts) {
+  const allResults = [];
+  let currentEnd = maxDays;  // Start from most recent
+  let chunkIndex = 0;
+
+  this._log(`   🎯 Fetching ${workflowIds.length} workflow(s), ${orgIds.length} org(s), ${maxDays} days max`);
+
+  // Loop backwards through time (30 → 0), breaking into adaptive chunks
+  while (currentEnd > 0 && chunkIndex < dayChunks.length) {
+    const targetChunkSize = dayChunks[chunkIndex];
+    const actualChunkSize = Math.min(targetChunkSize, currentEnd);
+    const currentStart = Math.max(0, currentEnd - actualChunkSize);
+    const timeoutMs = dayTimeouts[targetChunkSize] || 10000;
+
+    this._log(`   📦 Trying days ${currentStart}-${currentEnd} (${targetChunkSize}d chunk, ${timeoutMs/1000}s timeout)...`);
+
+    try {
+      // Fetch ALL orgs at once - no sliding window!
+      const executions = await this._fetchExecutionsChunkSingle(currentStart, currentEnd, null, orgIds, {
+        timeout: timeoutMs,
+        includeOnlyWorkflowIds: workflowIds
+      });
+
+      this._log(`   ✅ Success: ${executions.length} executions (days ${currentStart}-${currentEnd})`);
+      allResults.push(...executions);
+
+      // Move to next time window
+      currentEnd = currentStart;
+      // Keep same chunk size for next window (don't reset to 30d if 6d worked!)
+      // chunkIndex stays the same
+
+    } catch (error) {
+      this._log(`   ⚠️ Failed (${targetChunkSize}d chunk): ${error.message}`);
+
+      // Try smaller chunk size for THIS SAME TIME WINDOW
+      if (chunkIndex < dayChunks.length - 1) {
+        this._log(`   🔄 Retrying days ${currentStart}-${currentEnd} with smaller chunk...`);
+        chunkIndex++;
+        // Don't move currentEnd - retry the same window
+      } else {
+        this._log(`   ❌ All chunk sizes exhausted for days ${currentStart}-${currentEnd}, skipping`);
+        // Skip this window and move on
+        currentEnd = currentStart;
+        chunkIndex = 0;
+      }
+    }
+  }
+
+  this._log(`   📊 Workflow chunk complete: ${allResults.length} executions`);
+  return allResults;
+}
+
+/**
  * Internal: Fetch executions for a single chunk (≤ORG_BATCH_SIZE orgs)
  * @private
  */
@@ -5477,6 +5646,24 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
     variables.where.workflowId = workflowId;
   }
 
+  // Add workflow exclusion filter if specified (for auto-exclude busy workflows feature)
+  // Uses nested workflow search: search.workflow.id._nin
+  if (options.excludeWorkflowIds && options.excludeWorkflowIds.length > 0) {
+    variables.search.workflow = {
+      id: { _nin: options.excludeWorkflowIds }
+    };
+    this._log(`Excluding ${options.excludeWorkflowIds.length} workflow(s) from fetch`);
+  }
+
+  // Add workflow inclusion filter if specified (for form-first loading)
+  // Uses nested workflow search: search.workflow.id._in
+  if (options.includeOnlyWorkflowIds && options.includeOnlyWorkflowIds.length > 0) {
+    variables.search.workflow = {
+      id: { _in: options.includeOnlyWorkflowIds }
+    };
+    this._log(`🎯 Filtering to ${options.includeOnlyWorkflowIds.length} workflow(s)`);
+  }
+
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
   return result.workflowExecutions || [];
 }
@@ -5553,6 +5740,15 @@ async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowI
   // Add workflow filter if specified - matches original
   if (workflowId) {
     variables.where.workflowId = workflowId;
+  }
+
+  // Add workflow exclusion filter if specified (for auto-exclude busy workflows feature)
+  // Uses nested workflow search: search.workflow.id._nin
+  if (options.excludeWorkflowIds && options.excludeWorkflowIds.length > 0) {
+    variables.search.workflow = {
+      id: { _nin: options.excludeWorkflowIds }
+    };
+    this._log(`Excluding ${options.excludeWorkflowIds.length} workflow(s) from lightweight fetch`);
   }
 
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
@@ -6135,6 +6331,59 @@ _buildExecutionLink(executionId, orgId = null) {
     } catch (error) {
       this._error('Failed to get workflows', error);
       throw new Error(`Failed to get workflows: ${error.message}`);
+    }
+  }
+
+  /**
+   * Get workflow stats aggregated by org (fast aggregate query)
+   * Returns per-workflow execution counts, task counts, and time saved without fetching individual executions.
+   * Use this to identify busy workflows before fetching detailed execution data.
+   * @param {string} orgId - Organization ID
+   * @param {string} startDate - Start date (ISO format)
+   * @param {string} endDate - End date (ISO format)
+   * @param {boolean} includeSubWorkflows - Include sub-workflow executions (default: false)
+   * @returns {Promise<Array>} Array of workflow stats: { id, name, totalExecutions, totalTasks, numSucceededTasks, totalHumanSecondsSaved }
+   */
+  async getWorkflowStatsByOrg(orgId, startDate, endDate) {
+    if (!this.isInitialized) {
+      const error = new Error('Rewst not initialized. Call rewst.init() first!');
+      this._error('getWorkflowStatsByOrg called before initialization', error);
+      throw error;
+    }
+
+    this._log(`Fetching workflow stats for org ${orgId} from ${startDate} to ${endDate}...`);
+
+    try {
+      // Note: API uses startDate/endDate (not createdAtGte/createdAtLte)
+      // Use inline values (not GraphQL variables) to match working manual query format
+      const resolvedOrgId = orgId || this.orgId;
+      const query = `
+        query {
+          workflowStatsByOrg(
+            orgId: "${resolvedOrgId}"
+            startDate: "${startDate}"
+            endDate: "${endDate}"
+          ) {
+            id
+            name
+            numSucceededTasks
+            totalTasks
+            totalExecutions
+            totalHumanSecondsSaved
+          }
+        }
+      `;
+
+      // Pass null as operationName since query is anonymous (no "query name { }")
+      const result = await this._graphql(null, query, {});
+
+      const stats = result.workflowStatsByOrg || [];
+      this._log(`Retrieved stats for ${stats.length} workflow(s)`);
+      return stats;
+
+    } catch (error) {
+      this._error('Failed to get workflow stats by org', error);
+      throw new Error(`Failed to get workflow stats: ${error.message}`);
     }
   }
 
@@ -6955,6 +7204,12 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
       clearTimeout(timeoutId);
 
       if (!response.ok) {
+        // Try to get the actual error body for debugging
+        let errorBody = '';
+        try {
+          errorBody = await response.text();
+          console.error('[Rewst Debug] HTTP Error Response Body:', errorBody);
+        } catch (e) { /* ignore */ }
         throw new Error(`Request failed: ${response.status}`);
       }
 
@@ -11175,9 +11430,13 @@ if (typeof module !== 'undefined' && module.exports) {
 
       // GLOBAL CONFIGURATION
       const DAYS_TO_FETCH = 30;
-      const CACHE_VERSION = '1.5'; // Increment this to invalidate all caches - bumped for IndexedDB migration
+      const CACHE_VERSION = '1.6'; // Increment this to invalidate all caches - bumped for auto-exclude feature
       const CACHE_DURATION = 5 * 24 * 60 * 60 * 1000; // 5 days in milliseconds
       const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
+
+      // Auto-exclude busy workflows config
+      const AUTO_EXCLUDE_THRESHOLD = 5000;  // Workflows with more executions get excluded from main fetch
+      const ALWAYS_EXCLUDE_WORKFLOW_IDS = []; // Manual overrides (add workflow IDs here to always exclude)
 
       // ============================================
       // INDEXEDDB CACHE LAYER WITH LOCALSTORAGE FALLBACK
@@ -12875,31 +13134,106 @@ function stopMorphAnimation() {
             rewst.getIntegrationConfigs()
           ]);
           debugLog(`📋 Phase 1 complete: ${workflows.length} workflows, ${forms.length} forms, ${integrationConfigs.length} integrations`);
-          updateLoadingProgress(15, 'Fetching executions...', 'fetch'); // Start fetch pulse (15→60%)
+
+          // Phase 1.5: Get workflow stats to identify busy workflows (auto-exclude feature)
+          updateLoadingProgress(10, 'Analyzing workflow stats...');
+          const endDate = new Date().toISOString();
+          const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+          const workflowStats = await rewst.getWorkflowStatsByOrg(rewst.orgId, startDate, endDate);
+          debugLog(`📊 Workflow stats: ${workflowStats.length} workflows analyzed`);
+
+          // Show top 10 workflows by execution count for visibility
+          const sortedByExecs = [...workflowStats].sort((a, b) => b.totalExecutions - a.totalExecutions);
+          debugLog(`📊 Top 10 workflows by execution count:`);
+          sortedByExecs.slice(0, 10).forEach((w, i) => {
+            const marker = w.totalExecutions > AUTO_EXCLUDE_THRESHOLD ? '🚫' : '✅';
+            debugLog(`   ${i + 1}. ${marker} ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+          });
+
+          // Identify busy workflows that exceed threshold
+          const busyWorkflows = workflowStats.filter(w => w.totalExecutions > AUTO_EXCLUDE_THRESHOLD);
+          const excludeWorkflowIds = [
+            ...busyWorkflows.map(w => w.id),
+            ...ALWAYS_EXCLUDE_WORKFLOW_IDS
+          ];
+
+          debugLog(`📊 Threshold: ${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions`);
+          if (excludeWorkflowIds.length > 0) {
+            debugLog(`📋 Busy workflows (>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions):`);
+            busyWorkflows.forEach(w => {
+              debugLog(`   • ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+            });
+          } else {
+            debugLog(`✅ No workflows exceed threshold`);
+          }
 
           // Workflow scope: 'parents' | 'subs' | 'both'
           // Start with parents only for fast initial load (~15s)
           // User can load sub-workflows on-demand via button (see bottom-left UI)
           RewstApp.WORKFLOW_SCOPE = 'parents';
 
-          // Phase 2: Heavy execution queries (35+ parallel batches for 175 orgs)
-          const executions = await rewst.getRecentExecutions(true, days, null, false, orgIds, {
-            timeout: 10000,
+          // Phase 2: PARALLEL FETCH - Forms + everything else at the same time
+          const formWorkflowIds = workflows
+            .filter(w => w.triggers?.some(t =>
+              t.triggerType?.name?.toLowerCase().includes('form')
+            ))
+            .map(w => w.id);
+
+          updateLoadingProgress(15, 'Fetching executions...', 'fetch');
+          debugLog(`🚀 Phase 2: Parallel fetch - ${formWorkflowIds.length} forms + ${workflows.length - formWorkflowIds.length} other workflows`);
+
+          // Fire both requests in parallel
+          const formPromise = formWorkflowIds.length > 0
+            ? rewst.getRecentExecutions(true, days, null, false, orgIds, {
+                timeout: 45000,
+                priorityWorkflowIds: formWorkflowIds,
+                includeOnlyWorkflowIds: formWorkflowIds
+              })
+            : Promise.resolve([]);
+
+          const restPromise = rewst.getRecentExecutions(true, days, null, false, orgIds, {
+            timeout: 60000,
+            excludeWorkflowIds: formWorkflowIds.length > 0 ? formWorkflowIds : undefined,
             onProgress: ({ phase, completed, total, status }) => {
               if (phase === 'batches' && total > 0) {
-                // Map batch progress to 15-85% of the bar (stop pulse, batches provide real progress)
+                // Map batch progress to 15-85% of the bar
                 const batchPercent = 15 + Math.round((completed / total) * 70);
                 updateLoadingProgress(batchPercent, `Fetching: ${completed}/${total} batches...`);
               } else if (phase === 'enriching') {
-                updateLoadingProgress(60, 'Enriching data...', 'enrich'); // Start enrich pulse (60→100%)
+                updateLoadingProgress(85, 'Enriching data...', 'enrich');
               } else if (phase === 'complete') {
                 updateLoadingProgress(100, 'Complete!');
               }
             }
           });
-          debugLog(`📈 Phase 2 complete: ${executions.length} executions (${days} days)`);
 
-          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs };
+          // Wait for both to complete
+          const [formExecutions, allExecutions] = await Promise.all([formPromise, restPromise]);
+
+          debugLog(`✅ Parallel fetch complete: ${formExecutions.length} forms, ${allExecutions.length} others`);
+
+          // Merge: dedupe by execution ID (safety check in case filtering fails)
+          const mergedExecutions = [...formExecutions, ...allExecutions];
+          let executions = _.uniqBy(mergedExecutions, 'id');
+
+          const duplicateCount = mergedExecutions.length - executions.length;
+          if (duplicateCount > 0) {
+            debugLog(`⚠️ Removed ${duplicateCount} duplicate executions during merge`);
+          }
+          debugLog(`📈 Total: ${executions.length} executions after merge`);
+
+          // Store excluded workflows with their stats (for dashboard display)
+          const excludedWorkflows = busyWorkflows.map(w => ({
+            id: w.id,
+            name: w.name,
+            totalExecutions: w.totalExecutions,
+            totalTasks: w.totalTasks,
+            numSucceededTasks: w.numSucceededTasks,
+            totalHumanSecondsSaved: w.totalHumanSecondsSaved,
+            isStatsOnly: true  // Flag to indicate this is aggregate-only data
+          }));
+
+          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs, excludedWorkflows, workflowStats };
 
           // Store globally
           window.dashboardData = freshData;
