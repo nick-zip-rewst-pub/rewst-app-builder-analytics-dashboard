@@ -1,4 +1,4 @@
-# Rewst Analytics Dashboard
+# Rewst Analytics Dashboard aka RAD
 
 **Author:** Nick Zipse | https://github.com/nick-zip-rewst-pub
 
