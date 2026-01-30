@@ -747,6 +747,8 @@ function renderAdoptionDashboard() {
       renderBarChart();
     } else if (e.target.value === 'users') {
       renderUserStackedBarChart();
+    } else if (e.target.value === 'timeline') {
+      renderLineChart();
     }
   });
 
