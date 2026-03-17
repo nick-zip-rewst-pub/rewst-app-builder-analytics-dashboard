@@ -301,9 +301,9 @@ function renderAdoptionDashboard() {
   
   // Top Row - solid backgrounds
   RewstDOM.loadMetricCard("#adoption-metric-total-orgs", {
-    title: "Top Organization",
-    value: topOrg ? topOrg.name : "No data",
-    subtitle: topOrg ? `${topOrg.formSubmissions.toLocaleString()} submissions` : "",
+    title: "Top Org Submissions",
+    value: topOrg ? topOrg.formSubmissions.toLocaleString() : "0",
+    subtitle: topOrg ? topOrg.name : "No data",
     icon: "business",
     color: "teal",
     solidBackground: true
@@ -330,9 +330,9 @@ function renderAdoptionDashboard() {
 
   // Bottom Row - accent backgrounds
   RewstDOM.loadMetricCard("#adoption-metric-avg-forms", {
-    title: "Top User",
-    value: topUser ? topUser.email : "No data",
-    subtitle: topUser ? `${topUser.form_submissions.toLocaleString()} submissions` : "",
+    title: "Top User Submissions",
+    value: topUser ? topUser.form_submissions.toLocaleString() : "0",
+    subtitle: topUser ? topUser.email : "No data",
     icon: "person",
     color: "teal",
     cardClass: "card card-accent-teal",
