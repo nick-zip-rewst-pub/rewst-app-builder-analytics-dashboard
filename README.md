@@ -5,6 +5,10 @@
 ## Overview
 This is an example of how to use the App Builder inside of the Rewst platform. This dashboard demonstrates building modular JavaScript components that compile into a single HTML file for deployment.
 
+Want to build your own? The starter template is a baseline of the core library files, ready to plug into Claude Code or your own workflow, and can be found here:
+
+> **[Rewst App Builder Starter Template](https://github.com/nick-zip-rewst-pub/rewst-app-builder-starter-template)**
+
 #### ⚠️  Disclaimer:
 - This project is a **community contribution** and is **not an official Rewst product**. It is not developed, maintained, or supported by Rewst.
 
