@@ -171,7 +171,7 @@ function renderAdoptionDashboard() {
       formSubmissions: 0,
       timeSaved: 0,
       executions: 0,
-      tasksUsed: 0,
+      // tasksUsed removed: not surfaced on this page anymore
       uniqueForms: new Set(),
       dailyActivity: {}
     };
@@ -188,7 +188,6 @@ function renderAdoptionDashboard() {
         formSubmissions: 0,
         timeSaved: 0,
         executions: 0,
-        tasksUsed: 0,
         uniqueForms: new Set(),
         dailyActivity: {}
       };
@@ -197,7 +196,6 @@ function renderAdoptionDashboard() {
     orgStats[orgName].formSubmissions++;
     orgStats[orgName].timeSaved += (exec.workflow?.humanSecondsSaved || 0);
     orgStats[orgName].executions++;
-    orgStats[orgName].tasksUsed += (exec.tasksUsed || 0);
 
     // Track unique forms (use getFormId helper for workflow.triggers fallback)
     const formId = getFormId(exec);
@@ -1129,19 +1127,18 @@ function renderAdoptionDashboard() {
     form_submissions: org.formSubmissions,
     time_saved: formatTimeSaved(org.timeSaved),
     time_saved_raw: org.timeSaved, // For sorting
-    executions: org.executions,
-    tasks_used: org.tasksUsed
+    executions: org.executions
+    // tasks_used removed
   }));
 
   const table = RewstDOM.createTable(tableData, {
     title: '<span class="material-icons text-rewst-teal">business</span> Organization Adoption',
-    columns: ['organization', 'form_submissions', 'time_saved', 'executions', 'tasks_used'],
+    columns: ['organization', 'form_submissions', 'time_saved', 'executions'],
     headers: {
       organization: 'Organization',
       form_submissions: 'Form Submissions',
       time_saved: 'Time Saved',
-      executions: 'Total Executions',
-      tasks_used: 'Tasks Used'
+      executions: 'Total Executions'
     },
     searchable: true,
     defaultSort: {
@@ -1150,8 +1147,7 @@ function renderAdoptionDashboard() {
     },
     transforms: {
       form_submissions: (value) => value.toLocaleString(),
-      executions: (value) => value.toLocaleString(),
-      tasks_used: (value) => value.toLocaleString()
+      executions: (value) => value.toLocaleString()
     }
   });
 

@@ -82,6 +82,10 @@ class RewstApp {
     this._triggerCache = null;
     this._formCache = null;
     this._baseUrl = null;
+
+    // Session-scoped cache for getManagedOrganizations (keyed by parentOrgId)
+    // Stores the in-flight promise so concurrent calls get deduplicated too
+    this._managedOrgsCache = new Map();
   }
 
   /**
@@ -96,6 +100,53 @@ class RewstApp {
     if (this.debugMode) {
       console.log('[Rewst Debug]', ...args);
     }
+  }
+
+  /**
+   * Hard safety guard. Throws if the given orgId OR orgName matches the blocklist
+   * (RewstApp.BLOCKED_EXECUTION_ORG_IDS, RewstApp.BLOCKED_EXECUTION_ORG_NAMES).
+   * Either condition alone trips it (OR, not AND).
+   *
+   * Call from any method that pulls execution data or org-level execution stats.
+   * Org/workflow/form *listing* methods should NOT call this — listing is allowed.
+   *
+   * @param {string|null|undefined} orgId
+   * @param {string|null|undefined} [orgName] - optional, checked when available
+   * @throws {Error} BLOCKED_ORG if either matches
+   * @private
+   */
+  _assertExecutionOrgAllowed(orgId, orgName) {
+    const blockedById = orgId && RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(orgId);
+    const blockedByName = orgName && RewstApp.BLOCKED_EXECUTION_ORG_NAMES.has(orgName);
+    if (blockedById || blockedByName) {
+      const why = blockedById ? `id=${orgId}` : `name="${orgName}"`;
+      const e = new Error(
+        `BLOCKED_ORG: refusing to fetch execution data for ${why}. ` +
+        `This org is on the do-not-query list. Listing orgs / workflows is allowed; ` +
+        `pulling executions or stats is not (would scan unbounded data and crash the read replica).`
+      );
+      e.code = 'BLOCKED_ORG';
+      e.orgId = orgId;
+      e.orgName = orgName;
+      throw e;
+    }
+  }
+
+  /**
+   * Filter helper for callers that pass an array of orgIds. Returns the array
+   * with blocked orgs removed AND logs a warning. Use this when you want to be
+   * resilient (e.g. multi-org queries that should drop blocked orgs and continue
+   * with the rest), instead of throwing.
+   * @private
+   */
+  _stripBlockedOrgIds(orgIds) {
+    if (!Array.isArray(orgIds) || orgIds.length === 0) return orgIds;
+    const allowed = orgIds.filter(id => !RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(id));
+    if (allowed.length !== orgIds.length) {
+      const dropped = orgIds.filter(id => RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(id));
+      this._log(`🚫 BLOCKED_ORG: stripped ${dropped.length} blocked org(s) from the fetch list: ${dropped.join(', ')}`);
+    }
+    return allowed;
   }
 
   _error(message, error) {
@@ -128,9 +179,23 @@ class RewstApp {
       }
 
       this.orgId = org.id;
+      this._currentOrgName = org.name || null;
       this.isInitialized = true;
 
-      this._log('[SUCCESS] Successfully initialized for organization:', this.orgId);
+      // Soft warning at init for blocked orgs — does NOT throw, because the
+      // org-selector dashboard legitimately runs from Rewst Staff to enumerate
+      // sub-orgs (listing is allowed, execution fetches are not). The hard
+      // assertions live on individual execution-fetching methods, where they
+      // will throw if any code path tries to pull execution data.
+      if (RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(this.orgId) ||
+          (this._currentOrgName && RewstApp.BLOCKED_EXECUTION_ORG_NAMES.has(this._currentOrgName))) {
+        console.warn(
+          `[Rewst Warning] Initialized inside a BLOCKED org (${this._currentOrgName || this.orgId}). ` +
+          `Listing orgs / workflows / forms is allowed; any attempt to fetch executions or stats will throw.`
+        );
+      }
+
+      this._log('[SUCCESS] Successfully initialized for organization:', this.orgId, this._currentOrgName ? `(${this._currentOrgName})` : '');
       return this.orgId;
 
     } catch (error) {
@@ -157,10 +222,13 @@ class RewstApp {
    * Manually set organization ID (use this if init() fails)
    * @param {string} orgId - Organization ID to set
    */
-  setOrgId(orgId) {
+  setOrgId(orgId, orgName) {
+    // Hard safety guard — also runs on manual override.
+    this._assertExecutionOrgAllowed(orgId, orgName);
     this.orgId = orgId;
+    if (orgName !== undefined) this._currentOrgName = orgName;
     this.isInitialized = true;
-    this._log('Organization ID manually set to:', orgId);
+    this._log('Organization ID manually set to:', orgId, orgName ? `(${orgName})` : '');
   }
 
   /**
@@ -1178,8 +1246,14 @@ class RewstApp {
     }
 
     const targetOrgId = parentOrgId || this.orgId;
-    this._log(`Fetching managed organizations for org: ${targetOrgId}...`);
 
+    if (this._managedOrgsCache.has(targetOrgId)) {
+      this._log(`Returning cached managed organizations for org: ${targetOrgId}`);
+      return this._managedOrgsCache.get(targetOrgId);
+    }
+
+    this._log(`Fetching managed organizations for org: ${targetOrgId}...`);
+    const fetchPromise = (async () => {
     try {
       const query = `
         query getManagedOrgs($managingOrgId: ID!) {
@@ -1251,6 +1325,7 @@ class RewstApp {
       return safeOrgs;
 
     } catch (error) {
+      this._managedOrgsCache.delete(targetOrgId); // don't cache failures
       this._error('Failed to get managed organizations', error);
       // Preserve session expired flag when re-throwing
       const wrappedError = new Error(`Failed to get managed organizations: ${error.message}`);
@@ -1260,6 +1335,152 @@ class RewstApp {
       }
       throw wrappedError;
     }
+    })();
+    this._managedOrgsCache.set(targetOrgId, fetchPromise);
+    return fetchPromise;
+  }
+
+  /**
+   * Get ALL managed organizations recursively (all layers of sub-orgs).
+   * Uses getManagedOrganizations internally but walks the full tree.
+   * Limits concurrency to avoid overwhelming the server with parallel requests.
+   */
+  async getAllManagedOrganizations(parentOrgId = null, { concurrency = 5, onProgress = null } = {}) {
+    const targetOrgId = parentOrgId || this.orgId;
+    this._log(`Fetching ALL managed organizations (recursive) for org: ${targetOrgId}...`);
+
+    // Get the first level (includes the target org itself)
+    const firstLevel = await this.getManagedOrganizations(parentOrgId);
+
+    const seen = new Set(firstLevel.map(o => o.id));
+    const allOrgs = [...firstLevel];
+
+    // Collect child org IDs to explore (skip the target org itself)
+    let queue = firstLevel.filter(o => o.id !== targetOrgId).map(o => o.id);
+
+    // Helper: run tasks with a max concurrency limit
+    const runWithConcurrency = async (ids, fn) => {
+      const results = [];
+      let i = 0;
+      const runNext = async () => {
+        if (i >= ids.length) return;
+        const idx = i++;
+        results[idx] = await fn(ids[idx]).catch(() => []);
+        await runNext();
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, runNext));
+      return results;
+    };
+
+    const MAX_TOTAL_ORGS = 500; // safety cap — prevents runaway tree walks
+    const MAX_DEPTH = 8;
+    let depth = 0;
+
+    while (queue.length > 0) {
+      if (allOrgs.length >= MAX_TOTAL_ORGS) {
+        this._warn(`getAllManagedOrganizations: hit MAX_TOTAL_ORGS (${MAX_TOTAL_ORGS}) — stopping tree walk. Org tree may be incomplete.`);
+        break;
+      }
+      if (depth >= MAX_DEPTH) {
+        this._warn(`getAllManagedOrganizations: hit MAX_DEPTH (${MAX_DEPTH}) — stopping tree walk. Org tree may be incomplete.`);
+        break;
+      }
+      depth++;
+
+      const currentBatch = queue.splice(0, queue.length);
+      this._log(`Fetching children for ${currentBatch.length} orgs (depth: ${depth}, concurrency: ${concurrency})...`);
+
+      const batchResults = await runWithConcurrency(currentBatch, orgId =>
+        this.getManagedOrganizations(orgId)
+          .then(orgs => orgs.filter(o => o.id !== orgId))
+      );
+
+      for (const orgs of batchResults) {
+        for (const org of orgs) {
+          if (!seen.has(org.id)) {
+            seen.add(org.id);
+            allOrgs.push(org);
+            if (allOrgs.length < MAX_TOTAL_ORGS) queue.push(org.id);
+          }
+        }
+      }
+
+      if (onProgress) onProgress({ found: allOrgs.length });
+    }
+
+    this._log(`Retrieved ${allOrgs.length} total organizations across all layers`);
+    return allOrgs;
+  }
+
+  /**
+   * Lightweight execution sample for high-volume workflows (auto-excluded from bulk fetch).
+   * Fires two parallel queries — failures first, then recent successes — so that
+   * recent failure data is always present even when a workflow runs thousands of times/day.
+   *
+   * Fields returned: id, status, createdAt, updatedAt, workflow.{id, humanSecondsSaved}
+   * No conductor.input, no triggers, no org object — dramatically lighter than full fetch.
+   *
+   * @param {string} workflowId
+   * @param {string} orgId         - specific org (no descendant expansion needed — workflowId narrows it)
+   * @param {number} days          - look-back window
+   * @param {object} [options]
+   * @param {number} [options.failureLimit=50]   - max recent failures to fetch
+   * @param {number} [options.successLimit=100]  - max recent successes to fetch
+   * @returns {Promise<Array>} failures first, then successes, newest-first within each group
+   */
+  async getWorkflowExecutionSample(workflowId, orgId, days, { failureLimit = 50, successLimit = 100 } = {}) {
+    if (!workflowId || !orgId) return [];
+
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    const query = `
+      query getWorkflowSample($workflowId: ID!, $search: WorkflowExecutionSearchInput, $limit: Int) {
+        workflowExecutions(
+          where: { workflowId: $workflowId }
+          order: [["createdAt", "desc"]]
+          search: $search
+          limit: $limit
+        ) {
+          id
+          status
+          createdAt
+          updatedAt
+          workflow {
+            id
+            humanSecondsSaved
+          }
+        }
+      }
+    `;
+
+    const baseSearch = {
+      orgId: { _eq: orgId },
+      createdAt: { _gte: since },
+      originatingExecutionId: { _eq: null }  // parent executions only
+    };
+
+    const [failures, successes] = await Promise.all([
+      this._graphql(null, query, {
+        workflowId,
+        search: { ...baseSearch, status: { _in: ['FAILED', 'failed'] } },
+        limit: failureLimit
+      }, { timeout: 15000 }).then(r => r.workflowExecutions || []).catch(err => {
+        this._warn(`getWorkflowExecutionSample(${workflowId}) failures failed: ${err.message}`);
+        return [];
+      }),
+
+      this._graphql(null, query, {
+        workflowId,
+        search: { ...baseSearch, status: { _in: ['SUCCEEDED', 'succeeded', 'COMPLETED'] } },
+        limit: successLimit
+      }, { timeout: 15000 }).then(r => r.workflowExecutions || []).catch(err => {
+        this._warn(`getWorkflowExecutionSample(${workflowId}) successes failed: ${err.message}`);
+        return [];
+      })
+    ]);
+
+    this._log(`📊 Workflow sample ${workflowId}: ${failures.length} failures + ${successes.length} successes`);
+    return [...failures, ...successes];
   }
 
   /**
@@ -1303,8 +1524,32 @@ class RewstApp {
    * @param {Array<string>|null} orgIds - Optional array of org IDs to fetch executions for (default: null for current org only)
    * @returns {Promise<Array>} Array of execution objects with status, workflow (including humanSecondsSaved), and optional triggerInfo
    */
+  // ============================================================================
+  // HARD SAFETY GUARD — DO NOT REMOVE
+  // ----------------------------------------------------------------------------
+  // These orgs sit at the top of the management hierarchy and contain combined
+  // data from many customer tenants. Any execution-pulling query against them
+  // (getRecentExecutions, workflow stats, aggregates) would scan staggering
+  // amounts of data and could melt the production read replica.
+  //
+  // Listing orgs / workflows / forms from these orgs is allowed — the org
+  // selector needs to enumerate sub-orgs. Only execution / stats data is blocked.
+  //
+  // Match by ID (primary) AND name (defense-in-depth in case of ID rotation).
+  // ============================================================================
+  static BLOCKED_EXECUTION_ORG_IDS = new Set([
+    '40f8b55a-e8a9-42fc-8dc1-179616275f10', // Rewst Staff
+  ]);
+  static BLOCKED_EXECUTION_ORG_NAMES = new Set([
+    'Rewst Staff',
+  ]);
+
   // Adaptive chunk sizes for execution fetching (from largest to smallest)
-  static CHUNK_SIZES = [6, 3, 2, 1, 0.5, 0.25, 0.1];
+  // Trimmed at 1-day floor — sub-day chunks were cascading into wasted retries
+  // when the backend conductor/triggers N+1 was the actual cost (not row count).
+  // Original ladder kept here for reference if we need to restore it:
+  // static CHUNK_SIZES = [6, 3, 2, 1, 0.5, 0.25, 0.1];
+  static CHUNK_SIZES = [6, 3, 2, 1];
   // Max orgs per query - large IN clauses are slow, so batch and run in parallel
   // Reduced to 5 to avoid Rewst server-side query timeouts
   static ORG_BATCH_SIZE = 5;
@@ -1339,9 +1584,12 @@ class RewstApp {
     0.25: 15000, // 15 seconds for 0.25-day chunks (6 hours)
     0.1: 15000   // 15 seconds for 0.1-day chunks (~2.4 hours)
   };
-  // RETRY-SPECIFIC: Same chunk sizes as regular fetch so we don't abandon busy orgs too early
-  // Goes down to 0.05d (1.2 hours) for very busy orgs - smaller than main fetch
-  static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1, 0.05];  // Start at 3 days, go down to 0.05d (1.2 hours)
+  // RETRY-SPECIFIC chunk sizes for the background retry pass.
+  // Trimmed at 1-day floor for the same reason as the main ladder above —
+  // sub-day retries on a backend bottlenecked by per-row N+1 are wasted work.
+  // Original ladder kept here for reference if we need to restore it:
+  // static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1, 0.05];
+  static RETRY_CHUNK_SIZES = [3, 2, 1];
   static RETRY_CHUNK_TIMEOUTS = {
     3: 20000,    // 20 seconds for 3-day chunks
     2: 20000,    // 20 seconds for 2-day chunks
@@ -1692,9 +1940,30 @@ class RewstApp {
       throw error;
     }
 
+    // HARD SAFETY GUARD — refuse to fetch executions for blocked orgs.
+    // Throws on the user's primary org (this.orgId). Strips blocked entries from
+    // an explicit orgIds list and continues, so multi-org callers can safely
+    // include the user's full org list — anything blocked just gets dropped.
+    this._assertExecutionOrgAllowed(this.orgId, this._currentOrgName);
+    if (Array.isArray(orgIds)) {
+      orgIds = this._stripBlockedOrgIds(orgIds);
+      if (orgIds.length === 0) {
+        this._log('🚫 BLOCKED_ORG: orgIds was non-empty but all entries were blocked — returning [] without fetching.');
+        return [];
+      }
+    }
+
     const timeoutMs = options.timeout || 30000; // Default 30s for backwards compatibility
     const timeRangeMsg = daysBack ? `from last ${daysBack} day(s)` : 'from all time';
     this._log(`Fetching executions ${timeRangeMsg}...`);
+
+    // Create a GLOBAL deadline for the entire fetch operation
+    // This spans all time chunks and all orgs - prevents one org from hogging 60s per chunk
+    // ALSO applies to the form-fast-path below — without this, form path runs unbounded
+    // and the dashboard's Promise.all waits forever even if the rest path bails at 60s.
+    const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
+    const globalDeadline = Date.now() + maxDurationMs;
+    this._log(`⏱️ Global deadline set: ${maxDurationMs/1000}s from now`);
 
     // FAST PATH: If priorityWorkflowIds provided, use workflow-chunking with adaptive day ranges
     // This is MUCH faster than org-based chunking for specific workflows (e.g., forms)
@@ -1706,15 +1975,10 @@ class RewstApp {
       return this._fetchExecutionsByWorkflowChunks(options.priorityWorkflowIds, daysBack, orgIds, {
         ...options,
         includeTriggerInfo,
-        includeRawContext
+        includeRawContext,
+        globalDeadline,  // form path now respects the same global deadline
       });
     }
-
-    // Create a GLOBAL deadline for the entire fetch operation
-    // This spans all time chunks and all orgs - prevents one org from hogging 60s per chunk
-    const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
-    const globalDeadline = Date.now() + maxDurationMs;
-    this._log(`⏱️ Global deadline set: ${maxDurationMs/1000}s from now`);
 
     // Track orgs that have already been queued for retry (deadline hit)
     // These should be skipped in subsequent time chunks
@@ -2186,6 +2450,39 @@ class RewstApp {
 
     return updated;
   }
+
+/**
+ * Infer trigger type from `workflow.triggers` metadata when the workflow has
+ * exactly one trigger (or all triggers share the same type). This avoids a
+ * `workflowExecutionContexts` fetch for every execution whose conductor.input
+ * doesn't pattern-match — most commonly Form Submission and Manual/Test runs
+ * on workflows that are exclusively forms or exclusively manual.
+ *
+ * Returns null when the workflow has no triggers or has multiple distinct
+ * trigger types (in which case we genuinely don't know which one fired).
+ * @private
+ */
+_inferFromSingleWorkflowTrigger(workflow) {
+  const triggers = (workflow?.triggers || []).filter(t => t?.triggerType?.name);
+  if (triggers.length === 0) return null;
+
+  // Collect distinct trigger type names across all triggers on this workflow.
+  const typeNames = new Set(triggers.map(t => t.triggerType.name));
+  if (typeNames.size !== 1) return null; // ambiguous — fall through to context fetch
+
+  const typeName = [...typeNames][0];
+  // Pick the first matching trigger (good enough for triggerName/triggerId).
+  // For form workflows, prefer one with a non-null formId so we can populate it.
+  const preferred = triggers.find(t => t.formId) || triggers[0];
+
+  return {
+    typeName,
+    typeRef: preferred?.triggerType?.ref || null,
+    triggerName: preferred?.name || null,
+    triggerId: preferred?.id || null,
+    formId: preferred?.formId || null,
+  };
+}
 
 /**
  * Infer trigger type from conductor.input without fetching full context
@@ -2976,7 +3273,7 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
     range.end = Math.max(range.end, chunk.daysAgoEnd);
   });
 
-  const PARALLEL_LIMIT = 5; // Keep 5 running at all times (sliding window)
+  const PARALLEL_LIMIT = 2; // Lowered from 5 to reduce concurrent DB load on the read replica during background retry
   const modeDesc = useLightweight ? 'LIGHTWEIGHT-FIRST (2-pass)' : 'FULL QUERY';
   this._log(`🔄 BACKGROUND RETRY STARTING: ${orgIds.length} org(s) with ${modeDesc} + SLIDING WINDOW (${PARALLEL_LIMIT} concurrent)...`);
 
@@ -3197,12 +3494,12 @@ async _fetchExecutionsChunk(daysAgoStart, daysAgoEnd, workflowId, orgIds = null,
  * - Total: ~6-20 requests depending on data volume vs ~100+ with org chunking
  */
 async _fetchExecutionsByWorkflowChunks(workflowIds, daysBack, orgIds, options = {}) {
-  const { timeout = 45000, onProgress } = options;
+  const { timeout = 45000, onProgress, globalDeadline } = options;
   const targetOrgIds = orgIds || [this.orgId];
 
   // Configuration
   const WORKFLOW_CHUNK_SIZE = options.workflowChunkSize || 1;   // 1 workflow per request (fire them all in parallel)
-  const PARALLEL_CHUNKS = options.parallelChunks || 20;          // Process 20 at a time (fast sliding window)
+  const PARALLEL_CHUNKS = options.parallelChunks || 5;           // Lowered from 20 — was firing 20 concurrent expensive workflowExecutions queries simultaneously
 
   // Use larger initial chunk sizes for workflow-based fetching (forms are typically less busy)
   // Start big, fail fast, adaptive fallback
@@ -3234,6 +3531,14 @@ async _fetchExecutionsByWorkflowChunks(workflowIds, daysBack, orgIds, options = 
   let completed = 0;
 
   for (let i = 0; i < workflowChunks.length; i += PARALLEL_CHUNKS) {
+    // Honor the global deadline — bail with partial results so the dashboard's
+    // Promise.all can resolve and the UI can render with what we have.
+    if (globalDeadline && Date.now() > globalDeadline) {
+      const remaining = workflowChunks.length - i;
+      this._log(`⏰ FORM-PATH DEADLINE HIT — returning ${allResults.length} partial executions, ${remaining} workflow chunk(s) skipped`);
+      break;
+    }
+
     const batch = workflowChunks.slice(i, i + PARALLEL_CHUNKS);
 
     this._log(`📦 Processing workflow chunk batch ${i / PARALLEL_CHUNKS + 1}/${Math.ceil(workflowChunks.length / PARALLEL_CHUNKS)} (${batch.length} chunks)`);
@@ -3342,7 +3647,6 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
         status
         createdAt
         updatedAt
-        numSuccessfulTasks
         parentExecutionId
         originatingExecutionId
         organization {
@@ -3410,17 +3714,8 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
     variables.where.workflowId = workflowId;
   }
 
-  // Add workflow exclusion filter if specified (for auto-exclude busy workflows feature)
-  // Uses nested workflow search: search.workflow.id._nin
-  if (options.excludeWorkflowIds && options.excludeWorkflowIds.length > 0) {
-    variables.search.workflow = {
-      id: { _nin: options.excludeWorkflowIds }
-    };
-    this._log(`Excluding ${options.excludeWorkflowIds.length} workflow(s) from fetch`);
-  }
-
   // Add workflow inclusion filter if specified (for form-first loading)
-  // Uses nested workflow search: search.workflow.id._in
+  // Uses nested workflow search: search.workflow.id._in  (_nin removed — all callers use _in)
   if (options.includeOnlyWorkflowIds && options.includeOnlyWorkflowIds.length > 0) {
     variables.search.workflow = {
       id: { _in: options.includeOnlyWorkflowIds }
@@ -3429,7 +3724,11 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
   }
 
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
-  return result.workflowExecutions || [];
+  const executions = result.workflowExecutions || [];
+  if (executions.length >= 10000) {
+    this._warn('_fetchExecutionsChunkSingle: result hit the 10k row limit — data may be truncated. Consider narrowing the date range.');
+  }
+  return executions;
 }
 
 /**
@@ -3452,7 +3751,6 @@ async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowI
         status
         createdAt
         updatedAt
-        numSuccessfulTasks
         parentExecutionId
         originatingExecutionId
         organization {
@@ -3506,17 +3804,12 @@ async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowI
     variables.where.workflowId = workflowId;
   }
 
-  // Add workflow exclusion filter if specified (for auto-exclude busy workflows feature)
-  // Uses nested workflow search: search.workflow.id._nin
-  if (options.excludeWorkflowIds && options.excludeWorkflowIds.length > 0) {
-    variables.search.workflow = {
-      id: { _nin: options.excludeWorkflowIds }
-    };
-    this._log(`Excluding ${options.excludeWorkflowIds.length} workflow(s) from lightweight fetch`);
-  }
-
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
-  return result.workflowExecutions || [];
+  const executions = result.workflowExecutions || [];
+  if (executions.length >= 10000) {
+    this._warn('_fetchExecutionsChunkSingleLightweight: result hit the 10k row limit — data may be truncated.');
+  }
+  return executions;
 }
 
 /**
@@ -3924,6 +4217,23 @@ _buildExecutionLink(executionId, orgId = null) {
    * @param {boolean} includeRawContext - Include raw context data (default: false)
    * @returns {Promise<object|null>} Trigger info object with type, typeRef, triggerName, formName, links, etc., or null
    */
+  /**
+   * Public wrapper around _doGetExecutionTriggerInfo that dedupes within a session.
+   *
+   * Multiple lib paths fire context fetches for the same exec:
+   *   1. Initial _fetchTriggerInfoBatched (during getRecentExecutions)
+   *   2. retryFailedOrgBatches → _fetchTriggerInfoBatched on retry results
+   *   3. retryFailedTriggerInfo Phase 1 (retry of failed individual fetches)
+   *   4. retryFailedTriggerInfo Phase 2 (enrichFormSubmissionContext refetches Form Submissions)
+   *
+   * On large tenants where many orgs fail and retry, the same execution can land
+   * in multiple of these waves, and each path used to fire its own getContexts
+   * call independently. We saw the same exec ID hit 4× in 15 seconds for a big
+   * client. This wrapper coalesces all callers onto one in-flight Promise per
+   * execution ID, and caches the resolved value for the rest of the session.
+   *
+   * Errors are NOT cached — failed fetches stay retryable.
+   */
   async getExecutionTriggerInfo(executionId, includeRawContext = false, options = {}) {
     if (!executionId) {
       const error = new Error('Execution ID is required');
@@ -3931,6 +4241,30 @@ _buildExecutionLink(executionId, orgId = null) {
       throw error;
     }
 
+    if (!this._triggerInfoCache) this._triggerInfoCache = new Map();
+    if (!this._triggerInfoInflight) this._triggerInfoInflight = new Map();
+
+    // Cache hit — return the resolved value without refetching.
+    if (this._triggerInfoCache.has(executionId)) {
+      return this._triggerInfoCache.get(executionId);
+    }
+    // In-flight dedupe — multiple concurrent callers share one Promise.
+    if (this._triggerInfoInflight.has(executionId)) {
+      return this._triggerInfoInflight.get(executionId);
+    }
+
+    const p = this._doGetExecutionTriggerInfo(executionId, includeRawContext, options);
+    this._triggerInfoInflight.set(executionId, p);
+    try {
+      const result = await p;
+      this._triggerInfoCache.set(executionId, result);
+      return result;
+    } finally {
+      this._triggerInfoInflight.delete(executionId);
+    }
+  }
+
+  async _doGetExecutionTriggerInfo(executionId, includeRawContext = false, options = {}) {
     this._log('Fetching trigger info for execution:', executionId);
 
     try {
@@ -4115,6 +4449,9 @@ _buildExecutionLink(executionId, orgId = null) {
       throw error;
     }
 
+    // Hard safety guard — workflow stats roll up execution data org-wide.
+    this._assertExecutionOrgAllowed(orgId || this.orgId, this._currentOrgName);
+
     this._log(`Fetching workflow stats for org ${orgId} from ${startDate} to ${endDate}...`);
 
     try {
@@ -4139,7 +4476,7 @@ _buildExecutionLink(executionId, orgId = null) {
       `;
 
       // Pass null as operationName since query is anonymous (no "query name { }")
-      const result = await this._graphql(null, query, {});
+      const result = await this._graphql(null, query, {}, { timeout: 15000 });
 
       const stats = result.workflowStatsByOrg || [];
       this._log(`Retrieved stats for ${stats.length} workflow(s)`);
@@ -4149,6 +4486,210 @@ _buildExecutionLink(executionId, orgId = null) {
       this._error('Failed to get workflow stats by org', error);
       throw new Error(`Failed to get workflow stats: ${error.message}`);
     }
+  }
+
+  // ============================================================================
+  // AGGREGATE ENDPOINTS
+  // ----------------------------------------------------------------------------
+  // These hit dedicated aggregate resolvers on the backend instead of pulling
+  // individual workflowExecutions and computing totals client-side. They are
+  // ~1s instead of 10-60s+ for the equivalent client-side computation, and they
+  // do NOT trigger the addSuccessfulTaskCounts UNION-ALL or the per-row conductor
+  // findOne. Use these for dashboard summary widgets, trend charts, and
+  // grouped totals. Reserve workflowExecutions for surfaces that genuinely
+  // need per-execution data (trigger inference, user info, drill-downs).
+  // ============================================================================
+
+  /**
+   * Internal helper to build an ISO date `daysBack` days before now.
+   * @private
+   */
+  _isoDaysAgo(daysBack) {
+    return new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  /**
+   * Overall execution stats for an org over a date range.
+   * Returns { delayed, failed, humanSecondsSaved, paused, pending, running, succeeded }.
+   * Backend resolver: workflowExecutionStats (single aggregate query, sub-second)
+   * @param {number} daysBack - Days to look back (default 7)
+   * @param {object} options - { includeSubWorkflows?: boolean, rollUpTimeSaved?: boolean, orgId?: string }
+   */
+  async getWorkflowExecutionStats(daysBack = 7, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const createdSince = this._isoDaysAgo(daysBack);
+    const includeSubWorkflows = options.includeSubWorkflows ?? false;
+    const rollUpTimeSaved = options.rollUpTimeSaved ?? true;
+
+    const query = `
+      query getWorkflowExecutionStats($orgId: ID!, $createdSince: String!, $includeSubWorkflows: Boolean, $rollUpTimeSaved: Boolean) {
+        workflowExecutionStats(
+          orgId: $orgId
+          createdSince: $createdSince
+          includeSubWorkflows: $includeSubWorkflows
+          rollUpTimeSaved: $rollUpTimeSaved
+        ) {
+          succeeded
+          failed
+          delayed
+          paused
+          pending
+          running
+          humanSecondsSaved
+        }
+      }
+    `;
+
+    const result = await this._graphql('getWorkflowExecutionStats', query, {
+      orgId, createdSince, includeSubWorkflows, rollUpTimeSaved
+    });
+    return result.workflowExecutionStats || null;
+  }
+
+  /**
+   * Daily task counts over a date range. Returns [{ date, count }, ...].
+   * Backend resolver: dailyTaskCountsByDateRange (sub-second aggregate)
+   * @param {number} daysBack - Days to look back (default 30)
+   * @param {object} options - { orgId?: string }
+   */
+  async getDailyTaskCountsByDateRange(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const startDate = this._isoDaysAgo(daysBack);
+    const endDate = new Date().toISOString();
+
+    const query = `
+      query getDailyTaskCountsByDateRange($orgId: ID!, $startDate: String!, $endDate: String!) {
+        dailyTaskCountsByDateRange(orgId: $orgId, startDate: $startDate, endDate: $endDate) {
+          date
+          count
+        }
+      }
+    `;
+
+    const result = await this._graphql('getDailyTaskCountsByDateRange', query, { orgId, startDate, endDate }, { timeout: 20000 });
+    return result.dailyTaskCountsByDateRange || [];
+  }
+
+  /**
+   * Daily time saved over a date range. Returns [{ date, seconds }, ...].
+   * Backend resolver: dailyTimeSavedByDateRange (sub-second aggregate)
+   */
+  async getDailyTimeSavedByDateRange(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const startDate = this._isoDaysAgo(daysBack);
+    const endDate = new Date().toISOString();
+
+    const query = `
+      query getDailyTimeSavedByDateRange($orgId: ID!, $startDate: String!, $endDate: String!) {
+        dailyTimeSavedByDateRange(orgId: $orgId, startDate: $startDate, endDate: $endDate) {
+          date
+          seconds
+        }
+      }
+    `;
+
+    const result = await this._graphql('getDailyTimeSavedByDateRange', query, { orgId, startDate, endDate }, { timeout: 20000 });
+    return result.dailyTimeSavedByDateRange || [];
+  }
+
+  /**
+   * Time saved grouped by workflow. Returns [{ workflowId, workflowName, secondsSaved, totalExecutions, successfulExecutions, failedExecutions }, ...].
+   * Backend resolver: timeSavedGroupByWorkflow (uses stats table by default)
+   * @param {number} daysBack - Days to look back (default 30)
+   * @param {object} options - { workflowStatus?: string, useStatsTable?: boolean, orgId?: string }
+   */
+  async getTimeSavedGroupByWorkflow(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const updatedAt = this._isoDaysAgo(daysBack);
+    const workflowStatus = options.workflowStatus || null;
+    const useStatsTable = options.useStatsTable ?? true;
+
+    const query = `
+      query getTimeSavedGroupByWorkflow($orgId: ID!, $updatedAt: String!, $workflowStatus: String, $useStatsTable: Boolean!) {
+        timeSavedGroupByWorkflow(
+          orgId: $orgId
+          updatedAt: $updatedAt
+          workflowStatus: $workflowStatus
+          useStatsTable: $useStatsTable
+        ) {
+          workflowId
+          workflowName
+          secondsSaved
+          totalExecutions
+          successfulExecutions
+          failedExecutions
+        }
+      }
+    `;
+
+    const result = await this._graphql('getTimeSavedGroupByWorkflow', query, { orgId, updatedAt, workflowStatus, useStatsTable }, { timeout: 20000 });
+    return result.timeSavedGroupByWorkflow || [];
+  }
+
+  /**
+   * Time saved grouped by sub-org. Returns [{ workflowId, workflowName, secondsSaved, totalExecutions, ranForOrg }, ...].
+   * Backend resolver: timeSavedGroupBySubOrg (uses stats table by default)
+   */
+  async getTimeSavedGroupBySubOrg(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const updatedAt = this._isoDaysAgo(daysBack);
+    const workflowStatus = options.workflowStatus || null;
+    const useStatsTable = options.useStatsTable ?? true;
+
+    const query = `
+      query getTimeSavedGroupBySubOrg($orgId: ID!, $updatedAt: String!, $workflowStatus: String, $useStatsTable: Boolean!) {
+        timeSavedGroupBySubOrg(
+          orgId: $orgId
+          updatedAt: $updatedAt
+          workflowStatus: $workflowStatus
+          useStatsTable: $useStatsTable
+        ) {
+          workflowId
+          workflowName
+          secondsSaved
+          totalExecutions
+          ranForOrg
+        }
+      }
+    `;
+
+    const result = await this._graphql('getTimeSavedGroupBySubOrg', query, { orgId, updatedAt, workflowStatus, useStatsTable }, { timeout: 20000 });
+    return result.timeSavedGroupBySubOrg || [];
+  }
+
+  /**
+   * Convenience: fire all five aggregate endpoints in parallel for a dashboard summary load.
+   * Returns { stats, dailyTasks, dailyTimeSaved, timeSavedByWorkflow, timeSavedBySubOrg }.
+   * Each value is null/[] on individual failure (does not throw).
+   */
+  async getDashboardAggregates(daysBack = 7, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    this._log(`📊 Fetching dashboard aggregates (${daysBack} days)...`);
+    const startTime = Date.now();
+
+    const [stats, dailyTasks, dailyTimeSaved, timeSavedByWorkflow, timeSavedBySubOrg] = await Promise.all([
+      this.getWorkflowExecutionStats(daysBack, options).catch(err => { this._error('getWorkflowExecutionStats failed', err); return null; }),
+      this.getDailyTaskCountsByDateRange(daysBack, options).catch(err => { this._error('getDailyTaskCountsByDateRange failed', err); return []; }),
+      this.getDailyTimeSavedByDateRange(daysBack, options).catch(err => { this._error('getDailyTimeSavedByDateRange failed', err); return []; }),
+      this.getTimeSavedGroupByWorkflow(daysBack, options).catch(err => { this._error('getTimeSavedGroupByWorkflow failed', err); return []; }),
+      this.getTimeSavedGroupBySubOrg(daysBack, options).catch(err => { this._error('getTimeSavedGroupBySubOrg failed', err); return []; }),
+    ]);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+    this._log(`✅ Dashboard aggregates fetched in ${elapsed}s`);
+    return { stats, dailyTasks, dailyTimeSaved, timeSavedByWorkflow, timeSavedBySubOrg };
   }
 
   /**
@@ -4167,8 +4708,8 @@ _buildExecutionLink(executionId, orgId = null) {
 
     try {
       const query = `
-        query getForms($orgId: ID!) {
-          forms(where: {orgId: $orgId}) {
+        query getForms($orgId: ID!, $limit: Int) {
+          forms(where: {orgId: $orgId}, limit: $limit) {
             id
             name
             description
@@ -4200,10 +4741,14 @@ _buildExecutionLink(executionId, orgId = null) {
       `;
 
       const result = await this._graphql('getForms', query, {
-        orgId: this.orgId
+        orgId: this.orgId,
+        limit: 500
       }, { timeout: 60000 }); // 60s timeout for forms
 
       const forms = result.forms || [];
+      if (forms.length >= 500) {
+        this._warn('getAllForms: result hit the 500-form limit — some forms may be missing.');
+      }
 
       // Sort fields by index and add link for each form
       forms.forEach(form => {
@@ -4741,8 +5286,46 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
         isSubWorkflow
       });
       
+    } else if (this._inferFromSingleWorkflowTrigger(execution.workflow)) {
+      // Workflow has only one trigger type → we know which one fired without
+      // needing a context fetch. This skips getContexts entirely for the bulk of
+      // Form Submission and Manual/Test executions on tenants where each workflow
+      // is tied to a single trigger (the common case).
+      // Cost: no `submittedInputs` / `user` data inline. Form-detail pages can
+      // backfill via enrichFormSubmissionContext() on demand.
+      const inferred2 = this._inferFromSingleWorkflowTrigger(execution.workflow);
+      const triggerInfo = {
+        type: inferred2.typeName,
+        typeRef: inferred2.typeRef,
+        triggerName: inferred2.triggerName,
+        triggerId: inferred2.triggerId,
+        triggerInstanceId: null,
+        triggeredAt: conductorInput.triggered_at || null,
+        isTest: false,
+        mode: inferred2.typeName === 'App Platform' ? 'app_platform' : null,
+        source: 'workflow.triggers (single trigger)',
+        user: null,
+        organization,
+        isSubWorkflow,
+        formId: inferred2.formId || null,
+      };
+      results.push({
+        ...execution,
+        link: executionLink,
+        workflow: { ...execution.workflow, link: workflowLink },
+        triggerInfo,
+        user: null,
+        form: inferred2.formId ? { id: inferred2.formId, name: null, link: null, input: null } : null,
+        organization,
+        tasksUsed: execution.numSuccessfulTasks || 0,
+        totalTasks: execution.totalTasks || 0,
+        humanSecondsSaved: execution.workflow?.humanSecondsSaved || 0,
+        isSubWorkflow,
+      });
+
     } else {
-      // Can't infer - need to fetch context (likely Form Submission or Manual/Test)
+      // Can't infer - need to fetch context (likely a workflow with multiple
+      // trigger types where we genuinely don't know which one fired)
       needsContextFetch.push({
         execution,
         workflowLink,
@@ -4759,12 +5342,12 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
   if (needsContextFetch.length > 0) {
     this._log(`📥 Fetching context for ${needsContextFetch.length} executions (Form/Manual/Unknown)...`);
     
-    const batchSize = 25;
+    const batchSize = 8;  // Lowered from 25 to reduce concurrent workflowExecutionContexts calls (each call is ~3 PG queries + auth check)
     const delayMs = 100;
 
     for (let i = 0; i < needsContextFetch.length; i += batchSize) {
       const batch = needsContextFetch.slice(i, i + batchSize);
-      
+
       const batchResults = await Promise.all(
         batch.map(async ({ execution, workflowLink, executionLink, organization }) => {
           try {
@@ -5021,7 +5604,8 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
   }
 
   async _getCurrentOrganization() {
-    const query = `query getUserOrganization { userOrganization { id } }`;
+    // Also fetch name so the safety guard can check both id AND name match.
+    const query = `query getUserOrganization { userOrganization { id name } }`;
     const result = await this._graphql('getUserOrganization', query);
     return result.userOrganization;
   }

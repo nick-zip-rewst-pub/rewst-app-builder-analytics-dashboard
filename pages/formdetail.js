@@ -248,7 +248,11 @@ function renderFormMetrics(executions) {
 
   const totalExecutions = executions.length;
   const totalTimeSaved = executions.reduce((sum, e) => sum + (e.humanSecondsSaved || 0), 0);
-  const totalTasksUsed = executions.reduce((sum, e) => sum + (e.tasksUsed || 0), 0);
+  // Tasks total comes from the org-wide workflow stats aggregate (already loaded in template).
+  // Forms are workflows in Rewst, so all executions share one workflow id we can look up.
+  const formWorkflowId = executions[0]?.workflow?.id;
+  const formWorkflowStat = (window.dashboardData?.workflowStats || []).find(s => s.id === formWorkflowId);
+  const totalTasksUsed = formWorkflowStat?.numSucceededTasks || 0;
   const avgTasksUsed = totalExecutions ? (totalTasksUsed / totalExecutions).toFixed(1) : 0;
   const monetaryValue = (totalTimeSaved / 3600) * 50; // assuming $50/hr
 
@@ -609,21 +613,20 @@ function renderFormSubmissionsTable(executions) {
       timestamp: parseInt(e.createdAt), // Raw timestamp for sorting/filtering
       status: e.status || '—',
       organization: e.organization?.name || e.triggerInfo?.organization?.name || '—',
-      user: e.user?.username || e.triggerInfo?.user?.username || '—',
-      tasks_used: e.tasksUsed ?? 0 // Raw number for sorting
+      user: e.user?.username || e.triggerInfo?.user?.username || '—'
+      // tasks_used column removed: numSuccessfulTasks no longer in bulk fetch
     };
   });
 
   const table = RewstDOM.createTable(rows, {
     title: '<span class="material-icons text-rewst-fandango">table_view</span> Form Submissions',
-    columns: ['view', 'timestamp', 'status', 'organization', 'user', 'tasks_used'],
+    columns: ['view', 'timestamp', 'status', 'organization', 'user'],
     headers: {
       view: 'View',
       timestamp: 'Timestamp',
       status: 'Status',
       organization: 'Organization',
-      user: 'Submitted By',
-      tasks_used: 'Tasks Used'
+      user: 'Submitted By'
     },
     filters: {
       timestamp: {
@@ -660,10 +663,6 @@ function renderFormSubmissionsTable(executions) {
           hour12: true
         });
         return `${dateStr} ${timeStr}`;
-      },
-      tasks_used: (value) => {
-        // Display formatted, but sorts on raw number
-        return value === 0 ? '—' : value.toString();
       },
       status: (value) => {
         const v = String(value || '').toUpperCase();

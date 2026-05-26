@@ -2330,6 +2330,10 @@ class RewstApp {
     this._triggerCache = null;
     this._formCache = null;
     this._baseUrl = null;
+
+    // Session-scoped cache for getManagedOrganizations (keyed by parentOrgId)
+    // Stores the in-flight promise so concurrent calls get deduplicated too
+    this._managedOrgsCache = new Map();
   }
 
   /**
@@ -2344,6 +2348,53 @@ class RewstApp {
     if (this.debugMode) {
       console.log('[Rewst Debug]', ...args);
     }
+  }
+
+  /**
+   * Hard safety guard. Throws if the given orgId OR orgName matches the blocklist
+   * (RewstApp.BLOCKED_EXECUTION_ORG_IDS, RewstApp.BLOCKED_EXECUTION_ORG_NAMES).
+   * Either condition alone trips it (OR, not AND).
+   *
+   * Call from any method that pulls execution data or org-level execution stats.
+   * Org/workflow/form *listing* methods should NOT call this — listing is allowed.
+   *
+   * @param {string|null|undefined} orgId
+   * @param {string|null|undefined} [orgName] - optional, checked when available
+   * @throws {Error} BLOCKED_ORG if either matches
+   * @private
+   */
+  _assertExecutionOrgAllowed(orgId, orgName) {
+    const blockedById = orgId && RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(orgId);
+    const blockedByName = orgName && RewstApp.BLOCKED_EXECUTION_ORG_NAMES.has(orgName);
+    if (blockedById || blockedByName) {
+      const why = blockedById ? `id=${orgId}` : `name="${orgName}"`;
+      const e = new Error(
+        `BLOCKED_ORG: refusing to fetch execution data for ${why}. ` +
+        `This org is on the do-not-query list. Listing orgs / workflows is allowed; ` +
+        `pulling executions or stats is not (would scan unbounded data and crash the read replica).`
+      );
+      e.code = 'BLOCKED_ORG';
+      e.orgId = orgId;
+      e.orgName = orgName;
+      throw e;
+    }
+  }
+
+  /**
+   * Filter helper for callers that pass an array of orgIds. Returns the array
+   * with blocked orgs removed AND logs a warning. Use this when you want to be
+   * resilient (e.g. multi-org queries that should drop blocked orgs and continue
+   * with the rest), instead of throwing.
+   * @private
+   */
+  _stripBlockedOrgIds(orgIds) {
+    if (!Array.isArray(orgIds) || orgIds.length === 0) return orgIds;
+    const allowed = orgIds.filter(id => !RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(id));
+    if (allowed.length !== orgIds.length) {
+      const dropped = orgIds.filter(id => RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(id));
+      this._log(`🚫 BLOCKED_ORG: stripped ${dropped.length} blocked org(s) from the fetch list: ${dropped.join(', ')}`);
+    }
+    return allowed;
   }
 
   _error(message, error) {
@@ -2376,9 +2427,23 @@ class RewstApp {
       }
 
       this.orgId = org.id;
+      this._currentOrgName = org.name || null;
       this.isInitialized = true;
 
-      this._log('[SUCCESS] Successfully initialized for organization:', this.orgId);
+      // Soft warning at init for blocked orgs — does NOT throw, because the
+      // org-selector dashboard legitimately runs from Rewst Staff to enumerate
+      // sub-orgs (listing is allowed, execution fetches are not). The hard
+      // assertions live on individual execution-fetching methods, where they
+      // will throw if any code path tries to pull execution data.
+      if (RewstApp.BLOCKED_EXECUTION_ORG_IDS.has(this.orgId) ||
+          (this._currentOrgName && RewstApp.BLOCKED_EXECUTION_ORG_NAMES.has(this._currentOrgName))) {
+        console.warn(
+          `[Rewst Warning] Initialized inside a BLOCKED org (${this._currentOrgName || this.orgId}). ` +
+          `Listing orgs / workflows / forms is allowed; any attempt to fetch executions or stats will throw.`
+        );
+      }
+
+      this._log('[SUCCESS] Successfully initialized for organization:', this.orgId, this._currentOrgName ? `(${this._currentOrgName})` : '');
       return this.orgId;
 
     } catch (error) {
@@ -2405,10 +2470,13 @@ class RewstApp {
    * Manually set organization ID (use this if init() fails)
    * @param {string} orgId - Organization ID to set
    */
-  setOrgId(orgId) {
+  setOrgId(orgId, orgName) {
+    // Hard safety guard — also runs on manual override.
+    this._assertExecutionOrgAllowed(orgId, orgName);
     this.orgId = orgId;
+    if (orgName !== undefined) this._currentOrgName = orgName;
     this.isInitialized = true;
-    this._log('Organization ID manually set to:', orgId);
+    this._log('Organization ID manually set to:', orgId, orgName ? `(${orgName})` : '');
   }
 
   /**
@@ -3426,8 +3494,14 @@ class RewstApp {
     }
 
     const targetOrgId = parentOrgId || this.orgId;
-    this._log(`Fetching managed organizations for org: ${targetOrgId}...`);
 
+    if (this._managedOrgsCache.has(targetOrgId)) {
+      this._log(`Returning cached managed organizations for org: ${targetOrgId}`);
+      return this._managedOrgsCache.get(targetOrgId);
+    }
+
+    this._log(`Fetching managed organizations for org: ${targetOrgId}...`);
+    const fetchPromise = (async () => {
     try {
       const query = `
         query getManagedOrgs($managingOrgId: ID!) {
@@ -3499,6 +3573,7 @@ class RewstApp {
       return safeOrgs;
 
     } catch (error) {
+      this._managedOrgsCache.delete(targetOrgId); // don't cache failures
       this._error('Failed to get managed organizations', error);
       // Preserve session expired flag when re-throwing
       const wrappedError = new Error(`Failed to get managed organizations: ${error.message}`);
@@ -3508,6 +3583,152 @@ class RewstApp {
       }
       throw wrappedError;
     }
+    })();
+    this._managedOrgsCache.set(targetOrgId, fetchPromise);
+    return fetchPromise;
+  }
+
+  /**
+   * Get ALL managed organizations recursively (all layers of sub-orgs).
+   * Uses getManagedOrganizations internally but walks the full tree.
+   * Limits concurrency to avoid overwhelming the server with parallel requests.
+   */
+  async getAllManagedOrganizations(parentOrgId = null, { concurrency = 5, onProgress = null } = {}) {
+    const targetOrgId = parentOrgId || this.orgId;
+    this._log(`Fetching ALL managed organizations (recursive) for org: ${targetOrgId}...`);
+
+    // Get the first level (includes the target org itself)
+    const firstLevel = await this.getManagedOrganizations(parentOrgId);
+
+    const seen = new Set(firstLevel.map(o => o.id));
+    const allOrgs = [...firstLevel];
+
+    // Collect child org IDs to explore (skip the target org itself)
+    let queue = firstLevel.filter(o => o.id !== targetOrgId).map(o => o.id);
+
+    // Helper: run tasks with a max concurrency limit
+    const runWithConcurrency = async (ids, fn) => {
+      const results = [];
+      let i = 0;
+      const runNext = async () => {
+        if (i >= ids.length) return;
+        const idx = i++;
+        results[idx] = await fn(ids[idx]).catch(() => []);
+        await runNext();
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, ids.length) }, runNext));
+      return results;
+    };
+
+    const MAX_TOTAL_ORGS = 500; // safety cap — prevents runaway tree walks
+    const MAX_DEPTH = 8;
+    let depth = 0;
+
+    while (queue.length > 0) {
+      if (allOrgs.length >= MAX_TOTAL_ORGS) {
+        this._warn(`getAllManagedOrganizations: hit MAX_TOTAL_ORGS (${MAX_TOTAL_ORGS}) — stopping tree walk. Org tree may be incomplete.`);
+        break;
+      }
+      if (depth >= MAX_DEPTH) {
+        this._warn(`getAllManagedOrganizations: hit MAX_DEPTH (${MAX_DEPTH}) — stopping tree walk. Org tree may be incomplete.`);
+        break;
+      }
+      depth++;
+
+      const currentBatch = queue.splice(0, queue.length);
+      this._log(`Fetching children for ${currentBatch.length} orgs (depth: ${depth}, concurrency: ${concurrency})...`);
+
+      const batchResults = await runWithConcurrency(currentBatch, orgId =>
+        this.getManagedOrganizations(orgId)
+          .then(orgs => orgs.filter(o => o.id !== orgId))
+      );
+
+      for (const orgs of batchResults) {
+        for (const org of orgs) {
+          if (!seen.has(org.id)) {
+            seen.add(org.id);
+            allOrgs.push(org);
+            if (allOrgs.length < MAX_TOTAL_ORGS) queue.push(org.id);
+          }
+        }
+      }
+
+      if (onProgress) onProgress({ found: allOrgs.length });
+    }
+
+    this._log(`Retrieved ${allOrgs.length} total organizations across all layers`);
+    return allOrgs;
+  }
+
+  /**
+   * Lightweight execution sample for high-volume workflows (auto-excluded from bulk fetch).
+   * Fires two parallel queries — failures first, then recent successes — so that
+   * recent failure data is always present even when a workflow runs thousands of times/day.
+   *
+   * Fields returned: id, status, createdAt, updatedAt, workflow.{id, humanSecondsSaved}
+   * No conductor.input, no triggers, no org object — dramatically lighter than full fetch.
+   *
+   * @param {string} workflowId
+   * @param {string} orgId         - specific org (no descendant expansion needed — workflowId narrows it)
+   * @param {number} days          - look-back window
+   * @param {object} [options]
+   * @param {number} [options.failureLimit=50]   - max recent failures to fetch
+   * @param {number} [options.successLimit=100]  - max recent successes to fetch
+   * @returns {Promise<Array>} failures first, then successes, newest-first within each group
+   */
+  async getWorkflowExecutionSample(workflowId, orgId, days, { failureLimit = 50, successLimit = 100 } = {}) {
+    if (!workflowId || !orgId) return [];
+
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+
+    const query = `
+      query getWorkflowSample($workflowId: ID!, $search: WorkflowExecutionSearchInput, $limit: Int) {
+        workflowExecutions(
+          where: { workflowId: $workflowId }
+          order: [["createdAt", "desc"]]
+          search: $search
+          limit: $limit
+        ) {
+          id
+          status
+          createdAt
+          updatedAt
+          workflow {
+            id
+            humanSecondsSaved
+          }
+        }
+      }
+    `;
+
+    const baseSearch = {
+      orgId: { _eq: orgId },
+      createdAt: { _gte: since },
+      originatingExecutionId: { _eq: null }  // parent executions only
+    };
+
+    const [failures, successes] = await Promise.all([
+      this._graphql(null, query, {
+        workflowId,
+        search: { ...baseSearch, status: { _in: ['FAILED', 'failed'] } },
+        limit: failureLimit
+      }, { timeout: 15000 }).then(r => r.workflowExecutions || []).catch(err => {
+        this._warn(`getWorkflowExecutionSample(${workflowId}) failures failed: ${err.message}`);
+        return [];
+      }),
+
+      this._graphql(null, query, {
+        workflowId,
+        search: { ...baseSearch, status: { _in: ['SUCCEEDED', 'succeeded', 'COMPLETED'] } },
+        limit: successLimit
+      }, { timeout: 15000 }).then(r => r.workflowExecutions || []).catch(err => {
+        this._warn(`getWorkflowExecutionSample(${workflowId}) successes failed: ${err.message}`);
+        return [];
+      })
+    ]);
+
+    this._log(`📊 Workflow sample ${workflowId}: ${failures.length} failures + ${successes.length} successes`);
+    return [...failures, ...successes];
   }
 
   /**
@@ -3551,8 +3772,32 @@ class RewstApp {
    * @param {Array<string>|null} orgIds - Optional array of org IDs to fetch executions for (default: null for current org only)
    * @returns {Promise<Array>} Array of execution objects with status, workflow (including humanSecondsSaved), and optional triggerInfo
    */
+  // ============================================================================
+  // HARD SAFETY GUARD — DO NOT REMOVE
+  // ----------------------------------------------------------------------------
+  // These orgs sit at the top of the management hierarchy and contain combined
+  // data from many customer tenants. Any execution-pulling query against them
+  // (getRecentExecutions, workflow stats, aggregates) would scan staggering
+  // amounts of data and could melt the production read replica.
+  //
+  // Listing orgs / workflows / forms from these orgs is allowed — the org
+  // selector needs to enumerate sub-orgs. Only execution / stats data is blocked.
+  //
+  // Match by ID (primary) AND name (defense-in-depth in case of ID rotation).
+  // ============================================================================
+  static BLOCKED_EXECUTION_ORG_IDS = new Set([
+    '40f8b55a-e8a9-42fc-8dc1-179616275f10', // Rewst Staff
+  ]);
+  static BLOCKED_EXECUTION_ORG_NAMES = new Set([
+    'Rewst Staff',
+  ]);
+
   // Adaptive chunk sizes for execution fetching (from largest to smallest)
-  static CHUNK_SIZES = [6, 3, 2, 1, 0.5, 0.25, 0.1];
+  // Trimmed at 1-day floor — sub-day chunks were cascading into wasted retries
+  // when the backend conductor/triggers N+1 was the actual cost (not row count).
+  // Original ladder kept here for reference if we need to restore it:
+  // static CHUNK_SIZES = [6, 3, 2, 1, 0.5, 0.25, 0.1];
+  static CHUNK_SIZES = [6, 3, 2, 1];
   // Max orgs per query - large IN clauses are slow, so batch and run in parallel
   // Reduced to 5 to avoid Rewst server-side query timeouts
   static ORG_BATCH_SIZE = 5;
@@ -3587,9 +3832,12 @@ class RewstApp {
     0.25: 15000, // 15 seconds for 0.25-day chunks (6 hours)
     0.1: 15000   // 15 seconds for 0.1-day chunks (~2.4 hours)
   };
-  // RETRY-SPECIFIC: Same chunk sizes as regular fetch so we don't abandon busy orgs too early
-  // Goes down to 0.05d (1.2 hours) for very busy orgs - smaller than main fetch
-  static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1, 0.05];  // Start at 3 days, go down to 0.05d (1.2 hours)
+  // RETRY-SPECIFIC chunk sizes for the background retry pass.
+  // Trimmed at 1-day floor for the same reason as the main ladder above —
+  // sub-day retries on a backend bottlenecked by per-row N+1 are wasted work.
+  // Original ladder kept here for reference if we need to restore it:
+  // static RETRY_CHUNK_SIZES = [3, 2, 1, 0.5, 0.25, 0.1, 0.05];
+  static RETRY_CHUNK_SIZES = [3, 2, 1];
   static RETRY_CHUNK_TIMEOUTS = {
     3: 20000,    // 20 seconds for 3-day chunks
     2: 20000,    // 20 seconds for 2-day chunks
@@ -3940,9 +4188,30 @@ class RewstApp {
       throw error;
     }
 
+    // HARD SAFETY GUARD — refuse to fetch executions for blocked orgs.
+    // Throws on the user's primary org (this.orgId). Strips blocked entries from
+    // an explicit orgIds list and continues, so multi-org callers can safely
+    // include the user's full org list — anything blocked just gets dropped.
+    this._assertExecutionOrgAllowed(this.orgId, this._currentOrgName);
+    if (Array.isArray(orgIds)) {
+      orgIds = this._stripBlockedOrgIds(orgIds);
+      if (orgIds.length === 0) {
+        this._log('🚫 BLOCKED_ORG: orgIds was non-empty but all entries were blocked — returning [] without fetching.');
+        return [];
+      }
+    }
+
     const timeoutMs = options.timeout || 30000; // Default 30s for backwards compatibility
     const timeRangeMsg = daysBack ? `from last ${daysBack} day(s)` : 'from all time';
     this._log(`Fetching executions ${timeRangeMsg}...`);
+
+    // Create a GLOBAL deadline for the entire fetch operation
+    // This spans all time chunks and all orgs - prevents one org from hogging 60s per chunk
+    // ALSO applies to the form-fast-path below — without this, form path runs unbounded
+    // and the dashboard's Promise.all waits forever even if the rest path bails at 60s.
+    const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
+    const globalDeadline = Date.now() + maxDurationMs;
+    this._log(`⏱️ Global deadline set: ${maxDurationMs/1000}s from now`);
 
     // FAST PATH: If priorityWorkflowIds provided, use workflow-chunking with adaptive day ranges
     // This is MUCH faster than org-based chunking for specific workflows (e.g., forms)
@@ -3954,15 +4223,10 @@ class RewstApp {
       return this._fetchExecutionsByWorkflowChunks(options.priorityWorkflowIds, daysBack, orgIds, {
         ...options,
         includeTriggerInfo,
-        includeRawContext
+        includeRawContext,
+        globalDeadline,  // form path now respects the same global deadline
       });
     }
-
-    // Create a GLOBAL deadline for the entire fetch operation
-    // This spans all time chunks and all orgs - prevents one org from hogging 60s per chunk
-    const maxDurationMs = RewstApp.MAX_SLIDING_WINDOW_MS || 60000;
-    const globalDeadline = Date.now() + maxDurationMs;
-    this._log(`⏱️ Global deadline set: ${maxDurationMs/1000}s from now`);
 
     // Track orgs that have already been queued for retry (deadline hit)
     // These should be skipped in subsequent time chunks
@@ -4434,6 +4698,39 @@ class RewstApp {
 
     return updated;
   }
+
+/**
+ * Infer trigger type from `workflow.triggers` metadata when the workflow has
+ * exactly one trigger (or all triggers share the same type). This avoids a
+ * `workflowExecutionContexts` fetch for every execution whose conductor.input
+ * doesn't pattern-match — most commonly Form Submission and Manual/Test runs
+ * on workflows that are exclusively forms or exclusively manual.
+ *
+ * Returns null when the workflow has no triggers or has multiple distinct
+ * trigger types (in which case we genuinely don't know which one fired).
+ * @private
+ */
+_inferFromSingleWorkflowTrigger(workflow) {
+  const triggers = (workflow?.triggers || []).filter(t => t?.triggerType?.name);
+  if (triggers.length === 0) return null;
+
+  // Collect distinct trigger type names across all triggers on this workflow.
+  const typeNames = new Set(triggers.map(t => t.triggerType.name));
+  if (typeNames.size !== 1) return null; // ambiguous — fall through to context fetch
+
+  const typeName = [...typeNames][0];
+  // Pick the first matching trigger (good enough for triggerName/triggerId).
+  // For form workflows, prefer one with a non-null formId so we can populate it.
+  const preferred = triggers.find(t => t.formId) || triggers[0];
+
+  return {
+    typeName,
+    typeRef: preferred?.triggerType?.ref || null,
+    triggerName: preferred?.name || null,
+    triggerId: preferred?.id || null,
+    formId: preferred?.formId || null,
+  };
+}
 
 /**
  * Infer trigger type from conductor.input without fetching full context
@@ -5224,7 +5521,7 @@ async retryFailedOrgBatches(timeoutMs = 30000, retryOptions = {}) {
     range.end = Math.max(range.end, chunk.daysAgoEnd);
   });
 
-  const PARALLEL_LIMIT = 5; // Keep 5 running at all times (sliding window)
+  const PARALLEL_LIMIT = 2; // Lowered from 5 to reduce concurrent DB load on the read replica during background retry
   const modeDesc = useLightweight ? 'LIGHTWEIGHT-FIRST (2-pass)' : 'FULL QUERY';
   this._log(`🔄 BACKGROUND RETRY STARTING: ${orgIds.length} org(s) with ${modeDesc} + SLIDING WINDOW (${PARALLEL_LIMIT} concurrent)...`);
 
@@ -5445,12 +5742,12 @@ async _fetchExecutionsChunk(daysAgoStart, daysAgoEnd, workflowId, orgIds = null,
  * - Total: ~6-20 requests depending on data volume vs ~100+ with org chunking
  */
 async _fetchExecutionsByWorkflowChunks(workflowIds, daysBack, orgIds, options = {}) {
-  const { timeout = 45000, onProgress } = options;
+  const { timeout = 45000, onProgress, globalDeadline } = options;
   const targetOrgIds = orgIds || [this.orgId];
 
   // Configuration
   const WORKFLOW_CHUNK_SIZE = options.workflowChunkSize || 1;   // 1 workflow per request (fire them all in parallel)
-  const PARALLEL_CHUNKS = options.parallelChunks || 20;          // Process 20 at a time (fast sliding window)
+  const PARALLEL_CHUNKS = options.parallelChunks || 5;           // Lowered from 20 — was firing 20 concurrent expensive workflowExecutions queries simultaneously
 
   // Use larger initial chunk sizes for workflow-based fetching (forms are typically less busy)
   // Start big, fail fast, adaptive fallback
@@ -5482,6 +5779,14 @@ async _fetchExecutionsByWorkflowChunks(workflowIds, daysBack, orgIds, options = 
   let completed = 0;
 
   for (let i = 0; i < workflowChunks.length; i += PARALLEL_CHUNKS) {
+    // Honor the global deadline — bail with partial results so the dashboard's
+    // Promise.all can resolve and the UI can render with what we have.
+    if (globalDeadline && Date.now() > globalDeadline) {
+      const remaining = workflowChunks.length - i;
+      this._log(`⏰ FORM-PATH DEADLINE HIT — returning ${allResults.length} partial executions, ${remaining} workflow chunk(s) skipped`);
+      break;
+    }
+
     const batch = workflowChunks.slice(i, i + PARALLEL_CHUNKS);
 
     this._log(`📦 Processing workflow chunk batch ${i / PARALLEL_CHUNKS + 1}/${Math.ceil(workflowChunks.length / PARALLEL_CHUNKS)} (${batch.length} chunks)`);
@@ -5590,7 +5895,6 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
         status
         createdAt
         updatedAt
-        numSuccessfulTasks
         parentExecutionId
         originatingExecutionId
         organization {
@@ -5658,17 +5962,8 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
     variables.where.workflowId = workflowId;
   }
 
-  // Add workflow exclusion filter if specified (for auto-exclude busy workflows feature)
-  // Uses nested workflow search: search.workflow.id._nin
-  if (options.excludeWorkflowIds && options.excludeWorkflowIds.length > 0) {
-    variables.search.workflow = {
-      id: { _nin: options.excludeWorkflowIds }
-    };
-    this._log(`Excluding ${options.excludeWorkflowIds.length} workflow(s) from fetch`);
-  }
-
   // Add workflow inclusion filter if specified (for form-first loading)
-  // Uses nested workflow search: search.workflow.id._in
+  // Uses nested workflow search: search.workflow.id._in  (_nin removed — all callers use _in)
   if (options.includeOnlyWorkflowIds && options.includeOnlyWorkflowIds.length > 0) {
     variables.search.workflow = {
       id: { _in: options.includeOnlyWorkflowIds }
@@ -5677,7 +5972,11 @@ async _fetchExecutionsChunkSingle(daysAgoStart, daysAgoEnd, workflowId, orgIds =
   }
 
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
-  return result.workflowExecutions || [];
+  const executions = result.workflowExecutions || [];
+  if (executions.length >= 10000) {
+    this._warn('_fetchExecutionsChunkSingle: result hit the 10k row limit — data may be truncated. Consider narrowing the date range.');
+  }
+  return executions;
 }
 
 /**
@@ -5700,7 +5999,6 @@ async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowI
         status
         createdAt
         updatedAt
-        numSuccessfulTasks
         parentExecutionId
         originatingExecutionId
         organization {
@@ -5754,17 +6052,12 @@ async _fetchExecutionsChunkSingleLightweight(daysAgoStart, daysAgoEnd, workflowI
     variables.where.workflowId = workflowId;
   }
 
-  // Add workflow exclusion filter if specified (for auto-exclude busy workflows feature)
-  // Uses nested workflow search: search.workflow.id._nin
-  if (options.excludeWorkflowIds && options.excludeWorkflowIds.length > 0) {
-    variables.search.workflow = {
-      id: { _nin: options.excludeWorkflowIds }
-    };
-    this._log(`Excluding ${options.excludeWorkflowIds.length} workflow(s) from lightweight fetch`);
-  }
-
   const result = await this._graphql('getWorkflowExecutions', query, variables, options);
-  return result.workflowExecutions || [];
+  const executions = result.workflowExecutions || [];
+  if (executions.length >= 10000) {
+    this._warn('_fetchExecutionsChunkSingleLightweight: result hit the 10k row limit — data may be truncated.');
+  }
+  return executions;
 }
 
 /**
@@ -6172,6 +6465,23 @@ _buildExecutionLink(executionId, orgId = null) {
    * @param {boolean} includeRawContext - Include raw context data (default: false)
    * @returns {Promise<object|null>} Trigger info object with type, typeRef, triggerName, formName, links, etc., or null
    */
+  /**
+   * Public wrapper around _doGetExecutionTriggerInfo that dedupes within a session.
+   *
+   * Multiple lib paths fire context fetches for the same exec:
+   *   1. Initial _fetchTriggerInfoBatched (during getRecentExecutions)
+   *   2. retryFailedOrgBatches → _fetchTriggerInfoBatched on retry results
+   *   3. retryFailedTriggerInfo Phase 1 (retry of failed individual fetches)
+   *   4. retryFailedTriggerInfo Phase 2 (enrichFormSubmissionContext refetches Form Submissions)
+   *
+   * On large tenants where many orgs fail and retry, the same execution can land
+   * in multiple of these waves, and each path used to fire its own getContexts
+   * call independently. We saw the same exec ID hit 4× in 15 seconds for a big
+   * client. This wrapper coalesces all callers onto one in-flight Promise per
+   * execution ID, and caches the resolved value for the rest of the session.
+   *
+   * Errors are NOT cached — failed fetches stay retryable.
+   */
   async getExecutionTriggerInfo(executionId, includeRawContext = false, options = {}) {
     if (!executionId) {
       const error = new Error('Execution ID is required');
@@ -6179,6 +6489,30 @@ _buildExecutionLink(executionId, orgId = null) {
       throw error;
     }
 
+    if (!this._triggerInfoCache) this._triggerInfoCache = new Map();
+    if (!this._triggerInfoInflight) this._triggerInfoInflight = new Map();
+
+    // Cache hit — return the resolved value without refetching.
+    if (this._triggerInfoCache.has(executionId)) {
+      return this._triggerInfoCache.get(executionId);
+    }
+    // In-flight dedupe — multiple concurrent callers share one Promise.
+    if (this._triggerInfoInflight.has(executionId)) {
+      return this._triggerInfoInflight.get(executionId);
+    }
+
+    const p = this._doGetExecutionTriggerInfo(executionId, includeRawContext, options);
+    this._triggerInfoInflight.set(executionId, p);
+    try {
+      const result = await p;
+      this._triggerInfoCache.set(executionId, result);
+      return result;
+    } finally {
+      this._triggerInfoInflight.delete(executionId);
+    }
+  }
+
+  async _doGetExecutionTriggerInfo(executionId, includeRawContext = false, options = {}) {
     this._log('Fetching trigger info for execution:', executionId);
 
     try {
@@ -6363,6 +6697,9 @@ _buildExecutionLink(executionId, orgId = null) {
       throw error;
     }
 
+    // Hard safety guard — workflow stats roll up execution data org-wide.
+    this._assertExecutionOrgAllowed(orgId || this.orgId, this._currentOrgName);
+
     this._log(`Fetching workflow stats for org ${orgId} from ${startDate} to ${endDate}...`);
 
     try {
@@ -6387,7 +6724,7 @@ _buildExecutionLink(executionId, orgId = null) {
       `;
 
       // Pass null as operationName since query is anonymous (no "query name { }")
-      const result = await this._graphql(null, query, {});
+      const result = await this._graphql(null, query, {}, { timeout: 15000 });
 
       const stats = result.workflowStatsByOrg || [];
       this._log(`Retrieved stats for ${stats.length} workflow(s)`);
@@ -6397,6 +6734,210 @@ _buildExecutionLink(executionId, orgId = null) {
       this._error('Failed to get workflow stats by org', error);
       throw new Error(`Failed to get workflow stats: ${error.message}`);
     }
+  }
+
+  // ============================================================================
+  // AGGREGATE ENDPOINTS
+  // ----------------------------------------------------------------------------
+  // These hit dedicated aggregate resolvers on the backend instead of pulling
+  // individual workflowExecutions and computing totals client-side. They are
+  // ~1s instead of 10-60s+ for the equivalent client-side computation, and they
+  // do NOT trigger the addSuccessfulTaskCounts UNION-ALL or the per-row conductor
+  // findOne. Use these for dashboard summary widgets, trend charts, and
+  // grouped totals. Reserve workflowExecutions for surfaces that genuinely
+  // need per-execution data (trigger inference, user info, drill-downs).
+  // ============================================================================
+
+  /**
+   * Internal helper to build an ISO date `daysBack` days before now.
+   * @private
+   */
+  _isoDaysAgo(daysBack) {
+    return new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000).toISOString();
+  }
+
+  /**
+   * Overall execution stats for an org over a date range.
+   * Returns { delayed, failed, humanSecondsSaved, paused, pending, running, succeeded }.
+   * Backend resolver: workflowExecutionStats (single aggregate query, sub-second)
+   * @param {number} daysBack - Days to look back (default 7)
+   * @param {object} options - { includeSubWorkflows?: boolean, rollUpTimeSaved?: boolean, orgId?: string }
+   */
+  async getWorkflowExecutionStats(daysBack = 7, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const createdSince = this._isoDaysAgo(daysBack);
+    const includeSubWorkflows = options.includeSubWorkflows ?? false;
+    const rollUpTimeSaved = options.rollUpTimeSaved ?? true;
+
+    const query = `
+      query getWorkflowExecutionStats($orgId: ID!, $createdSince: String!, $includeSubWorkflows: Boolean, $rollUpTimeSaved: Boolean) {
+        workflowExecutionStats(
+          orgId: $orgId
+          createdSince: $createdSince
+          includeSubWorkflows: $includeSubWorkflows
+          rollUpTimeSaved: $rollUpTimeSaved
+        ) {
+          succeeded
+          failed
+          delayed
+          paused
+          pending
+          running
+          humanSecondsSaved
+        }
+      }
+    `;
+
+    const result = await this._graphql('getWorkflowExecutionStats', query, {
+      orgId, createdSince, includeSubWorkflows, rollUpTimeSaved
+    });
+    return result.workflowExecutionStats || null;
+  }
+
+  /**
+   * Daily task counts over a date range. Returns [{ date, count }, ...].
+   * Backend resolver: dailyTaskCountsByDateRange (sub-second aggregate)
+   * @param {number} daysBack - Days to look back (default 30)
+   * @param {object} options - { orgId?: string }
+   */
+  async getDailyTaskCountsByDateRange(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const startDate = this._isoDaysAgo(daysBack);
+    const endDate = new Date().toISOString();
+
+    const query = `
+      query getDailyTaskCountsByDateRange($orgId: ID!, $startDate: String!, $endDate: String!) {
+        dailyTaskCountsByDateRange(orgId: $orgId, startDate: $startDate, endDate: $endDate) {
+          date
+          count
+        }
+      }
+    `;
+
+    const result = await this._graphql('getDailyTaskCountsByDateRange', query, { orgId, startDate, endDate }, { timeout: 20000 });
+    return result.dailyTaskCountsByDateRange || [];
+  }
+
+  /**
+   * Daily time saved over a date range. Returns [{ date, seconds }, ...].
+   * Backend resolver: dailyTimeSavedByDateRange (sub-second aggregate)
+   */
+  async getDailyTimeSavedByDateRange(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const startDate = this._isoDaysAgo(daysBack);
+    const endDate = new Date().toISOString();
+
+    const query = `
+      query getDailyTimeSavedByDateRange($orgId: ID!, $startDate: String!, $endDate: String!) {
+        dailyTimeSavedByDateRange(orgId: $orgId, startDate: $startDate, endDate: $endDate) {
+          date
+          seconds
+        }
+      }
+    `;
+
+    const result = await this._graphql('getDailyTimeSavedByDateRange', query, { orgId, startDate, endDate }, { timeout: 20000 });
+    return result.dailyTimeSavedByDateRange || [];
+  }
+
+  /**
+   * Time saved grouped by workflow. Returns [{ workflowId, workflowName, secondsSaved, totalExecutions, successfulExecutions, failedExecutions }, ...].
+   * Backend resolver: timeSavedGroupByWorkflow (uses stats table by default)
+   * @param {number} daysBack - Days to look back (default 30)
+   * @param {object} options - { workflowStatus?: string, useStatsTable?: boolean, orgId?: string }
+   */
+  async getTimeSavedGroupByWorkflow(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const updatedAt = this._isoDaysAgo(daysBack);
+    const workflowStatus = options.workflowStatus || null;
+    const useStatsTable = options.useStatsTable ?? true;
+
+    const query = `
+      query getTimeSavedGroupByWorkflow($orgId: ID!, $updatedAt: String!, $workflowStatus: String, $useStatsTable: Boolean!) {
+        timeSavedGroupByWorkflow(
+          orgId: $orgId
+          updatedAt: $updatedAt
+          workflowStatus: $workflowStatus
+          useStatsTable: $useStatsTable
+        ) {
+          workflowId
+          workflowName
+          secondsSaved
+          totalExecutions
+          successfulExecutions
+          failedExecutions
+        }
+      }
+    `;
+
+    const result = await this._graphql('getTimeSavedGroupByWorkflow', query, { orgId, updatedAt, workflowStatus, useStatsTable }, { timeout: 20000 });
+    return result.timeSavedGroupByWorkflow || [];
+  }
+
+  /**
+   * Time saved grouped by sub-org. Returns [{ workflowId, workflowName, secondsSaved, totalExecutions, ranForOrg }, ...].
+   * Backend resolver: timeSavedGroupBySubOrg (uses stats table by default)
+   */
+  async getTimeSavedGroupBySubOrg(daysBack = 30, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    const updatedAt = this._isoDaysAgo(daysBack);
+    const workflowStatus = options.workflowStatus || null;
+    const useStatsTable = options.useStatsTable ?? true;
+
+    const query = `
+      query getTimeSavedGroupBySubOrg($orgId: ID!, $updatedAt: String!, $workflowStatus: String, $useStatsTable: Boolean!) {
+        timeSavedGroupBySubOrg(
+          orgId: $orgId
+          updatedAt: $updatedAt
+          workflowStatus: $workflowStatus
+          useStatsTable: $useStatsTable
+        ) {
+          workflowId
+          workflowName
+          secondsSaved
+          totalExecutions
+          ranForOrg
+        }
+      }
+    `;
+
+    const result = await this._graphql('getTimeSavedGroupBySubOrg', query, { orgId, updatedAt, workflowStatus, useStatsTable }, { timeout: 20000 });
+    return result.timeSavedGroupBySubOrg || [];
+  }
+
+  /**
+   * Convenience: fire all five aggregate endpoints in parallel for a dashboard summary load.
+   * Returns { stats, dailyTasks, dailyTimeSaved, timeSavedByWorkflow, timeSavedBySubOrg }.
+   * Each value is null/[] on individual failure (does not throw).
+   */
+  async getDashboardAggregates(daysBack = 7, options = {}) {
+    if (!this.isInitialized) throw new Error('Rewst not initialized. Call rewst.init() first!');
+    const orgId = options.orgId || this.orgId;
+    this._assertExecutionOrgAllowed(orgId, this._currentOrgName);
+    this._log(`📊 Fetching dashboard aggregates (${daysBack} days)...`);
+    const startTime = Date.now();
+
+    const [stats, dailyTasks, dailyTimeSaved, timeSavedByWorkflow, timeSavedBySubOrg] = await Promise.all([
+      this.getWorkflowExecutionStats(daysBack, options).catch(err => { this._error('getWorkflowExecutionStats failed', err); return null; }),
+      this.getDailyTaskCountsByDateRange(daysBack, options).catch(err => { this._error('getDailyTaskCountsByDateRange failed', err); return []; }),
+      this.getDailyTimeSavedByDateRange(daysBack, options).catch(err => { this._error('getDailyTimeSavedByDateRange failed', err); return []; }),
+      this.getTimeSavedGroupByWorkflow(daysBack, options).catch(err => { this._error('getTimeSavedGroupByWorkflow failed', err); return []; }),
+      this.getTimeSavedGroupBySubOrg(daysBack, options).catch(err => { this._error('getTimeSavedGroupBySubOrg failed', err); return []; }),
+    ]);
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+    this._log(`✅ Dashboard aggregates fetched in ${elapsed}s`);
+    return { stats, dailyTasks, dailyTimeSaved, timeSavedByWorkflow, timeSavedBySubOrg };
   }
 
   /**
@@ -6415,8 +6956,8 @@ _buildExecutionLink(executionId, orgId = null) {
 
     try {
       const query = `
-        query getForms($orgId: ID!) {
-          forms(where: {orgId: $orgId}) {
+        query getForms($orgId: ID!, $limit: Int) {
+          forms(where: {orgId: $orgId}, limit: $limit) {
             id
             name
             description
@@ -6448,10 +6989,14 @@ _buildExecutionLink(executionId, orgId = null) {
       `;
 
       const result = await this._graphql('getForms', query, {
-        orgId: this.orgId
+        orgId: this.orgId,
+        limit: 500
       }, { timeout: 60000 }); // 60s timeout for forms
 
       const forms = result.forms || [];
+      if (forms.length >= 500) {
+        this._warn('getAllForms: result hit the 500-form limit — some forms may be missing.');
+      }
 
       // Sort fields by index and add link for each form
       forms.forEach(form => {
@@ -6989,8 +7534,46 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
         isSubWorkflow
       });
       
+    } else if (this._inferFromSingleWorkflowTrigger(execution.workflow)) {
+      // Workflow has only one trigger type → we know which one fired without
+      // needing a context fetch. This skips getContexts entirely for the bulk of
+      // Form Submission and Manual/Test executions on tenants where each workflow
+      // is tied to a single trigger (the common case).
+      // Cost: no `submittedInputs` / `user` data inline. Form-detail pages can
+      // backfill via enrichFormSubmissionContext() on demand.
+      const inferred2 = this._inferFromSingleWorkflowTrigger(execution.workflow);
+      const triggerInfo = {
+        type: inferred2.typeName,
+        typeRef: inferred2.typeRef,
+        triggerName: inferred2.triggerName,
+        triggerId: inferred2.triggerId,
+        triggerInstanceId: null,
+        triggeredAt: conductorInput.triggered_at || null,
+        isTest: false,
+        mode: inferred2.typeName === 'App Platform' ? 'app_platform' : null,
+        source: 'workflow.triggers (single trigger)',
+        user: null,
+        organization,
+        isSubWorkflow,
+        formId: inferred2.formId || null,
+      };
+      results.push({
+        ...execution,
+        link: executionLink,
+        workflow: { ...execution.workflow, link: workflowLink },
+        triggerInfo,
+        user: null,
+        form: inferred2.formId ? { id: inferred2.formId, name: null, link: null, input: null } : null,
+        organization,
+        tasksUsed: execution.numSuccessfulTasks || 0,
+        totalTasks: execution.totalTasks || 0,
+        humanSecondsSaved: execution.workflow?.humanSecondsSaved || 0,
+        isSubWorkflow,
+      });
+
     } else {
-      // Can't infer - need to fetch context (likely Form Submission or Manual/Test)
+      // Can't infer - need to fetch context (likely a workflow with multiple
+      // trigger types where we genuinely don't know which one fired)
       needsContextFetch.push({
         execution,
         workflowLink,
@@ -7007,12 +7590,12 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
   if (needsContextFetch.length > 0) {
     this._log(`📥 Fetching context for ${needsContextFetch.length} executions (Form/Manual/Unknown)...`);
     
-    const batchSize = 25;
+    const batchSize = 8;  // Lowered from 25 to reduce concurrent workflowExecutionContexts calls (each call is ~3 PG queries + auth check)
     const delayMs = 100;
 
     for (let i = 0; i < needsContextFetch.length; i += batchSize) {
       const batch = needsContextFetch.slice(i, i + batchSize);
-      
+
       const batchResults = await Promise.all(
         batch.map(async ({ execution, workflowLink, executionLink, organization }) => {
           try {
@@ -7269,7 +7852,8 @@ async _fetchTriggerInfoBatched(executions, includeRawContext = false, options = 
   }
 
   async _getCurrentOrganization() {
-    const query = `query getUserOrganization { userOrganization { id } }`;
+    // Also fetch name so the safety guard can check both id AND name match.
+    const query = `query getUserOrganization { userOrganization { id name } }`;
     const result = await this._graphql('getUserOrganization', query);
     return result.userOrganization;
   }
@@ -8875,17 +9459,61 @@ const RewstDOM = {
    * @private
    */
   _markdownToHtml(markdown) {
-    return markdown
+    if (!markdown) return '';
+
+    // Process admonition blocks first: :::tip, :::warning, :::info, :::note, :::danger
+    // Format: :::type\ncontent\n:::
+    let result = markdown;
+
+    // Admonition blocks — convert to styled callout divs
+    const admonitionStyles = {
+      tip: 'background:#e0f2f1;border-left:4px solid #009490;color:#00695c',
+      warning: 'background:#fff3e0;border-left:4px solid #f9a100;color:#e65100',
+      danger: 'background:#ffebee;border-left:4px solid #f75b58;color:#c62828',
+      info: 'background:#e0f2f1;border-left:4px solid #009490;color:#00695c',
+      note: 'background:#f3e5f5;border-left:4px solid #504384;color:#4a148c'
+    };
+
+    // Use RegExp constructor to avoid [\s\S] in source (breaks when embedded in HTML <script> tags)
+    var admonitionRe = new RegExp(':::(tip|warning|danger|info|note)\\s*\\r?\\n([\\s\\S]*?):::', 'gi');
+    result = result.replace(admonitionRe, function(match, type, content) {
+      var style = admonitionStyles[type.toLowerCase()] || admonitionStyles.info;
+      var cleanContent = content.trim();
+      return '<div style="' + style + ';padding:12px 16px;border-radius:6px;margin:12px 0;font-size:0.9rem;">' + cleanContent + '<' + '/div>';
+    });
+
+    // Remove any remaining ::: markers
+    result = result.replace(/^:::\w*\s*$/gm, '');
+
+    result = result
+      // Horizontal rules: ---, ***, ___  (with optional leading/trailing whitespace or dashes)
+      .replace(/^\s*[-*_]{3,}\s*$/gm, '<hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;">')
       // Headers
       .replace(/^### (.*$)/gim, '<h3 class="text-lg font-semibold mb-2">$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="text-xl font-bold mb-3">$1</h2>')
       .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mb-4">$1</h1>')
       // Bold
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      // Italic
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
-      // Line breaks
+      .replace(/__(.*?)__/g, '<strong>$1</strong>')
+      // Italic (after bold to avoid conflict)
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>')
+      // Backslash line break (\ at end of line or standalone \)
+      .replace(/\\\s*$/gm, '<br>')
+      .replace(/^\\\s*$/gm, '<br>')
+      // Standalone backslash on its own line
+      .replace(/^\\$/gm, '')
+      // Line breaks (double newline = paragraph, single = br)
+      .replace(/\r\n/g, '\n')
+      .replace(/\n\n/g, '<' + '/p><p style="margin:8px 0;">')
       .replace(/\n/g, '<br>');
+
+    // Wrap in paragraph if not already wrapped
+    if (!result.startsWith('<')) {
+      result = '<p style="margin:8px 0;">' + result + '</p>';
+    }
+
+    return result;
   },
 
   /**
@@ -9257,12 +9885,22 @@ const RewstDOM = {
       throw new Error('RewstApp instance not found. Please ensure RewstApp is loaded or pass it via options.rewstApp');
     }
 
-    // Fetch form details
-    const formData = await rewstApp._getForm(formId);
+    // Fetch form details — use evaluatedForm if trigger available for org-specific overrides
+    const triggerId = options.triggerId || null;
+    let formData;
+    if (triggerId && rewstApp.getEvaluatedForm) {
+      formData = await rewstApp.getEvaluatedForm(formId, triggerId);
+    }
+    if (!formData) {
+      formData = await rewstApp._getForm(formId);
+    }
 
     if (!formData) {
       throw new Error(`Form ${formId} not found`);
     }
+
+    // Auto-detect triggerId from form if not provided (needed for enumSourceWorkflow)
+    const resolvedTriggerId = triggerId || formData.triggers?.[0]?.id || null;
 
     // Sort fields by index
     const sortedFields = [...formData.fields].sort((a, b) => {
@@ -9287,7 +9925,8 @@ const RewstDOM = {
     if (formData.description) {
       const desc = document.createElement('p');
       desc.className = 'text-gray-600 mb-6';
-      desc.textContent = formData.description;
+      // Fix literal \n in description text
+      desc.innerHTML = formData.description.replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
       form.appendChild(desc);
     }
 
@@ -9335,6 +9974,92 @@ const RewstDOM = {
     // Map to store field wrappers for show/hide
     const fieldWrappers = new Map();
 
+    // Build field ID → field name lookup (for inputFromFields resolution)
+    const fieldIdToName = new Map();
+    const fieldNameToId = new Map();
+    sortedFields.forEach(f => {
+      if (f.schema?.name) {
+        fieldIdToName.set(f.id, f.schema.name);
+        fieldNameToId.set(f.schema.name, f.id);
+      }
+    });
+
+    // Build dependency graph: when field X changes, which fields need their options reloaded?
+    // inputFromFields maps: { fieldName: { fieldId, isActive, isRequired } }
+    // We invert this to: parentFieldName → [childFieldIds that depend on it]
+    const cascadeDependents = new Map(); // parentFieldName → Set of child field IDs
+    const fieldOptionLoaders = new Map(); // fieldId → loadOptions function (registered during field creation)
+
+    sortedFields.forEach(f => {
+      const wfConfig = f.schema?.enumSourceWorkflow;
+      if (wfConfig?.inputFromFields) {
+        Object.entries(wfConfig.inputFromFields).forEach(([inputKey, config]) => {
+          if (!config.isActive) return;
+          // config.fieldId is the ID of the parent field this depends on
+          const parentName = fieldIdToName.get(config.fieldId);
+          if (parentName) {
+            if (!cascadeDependents.has(parentName)) {
+              cascadeDependents.set(parentName, new Set());
+            }
+            cascadeDependents.get(parentName).add(f.id);
+          }
+        });
+      }
+    });
+
+    // Cascade: when a field value changes, reload dependent field options
+    const triggerCascade = (changedFieldName) => {
+      const dependents = cascadeDependents.get(changedFieldName);
+      if (!dependents || dependents.size === 0) return;
+      dependents.forEach(childFieldId => {
+        const loader = fieldOptionLoaders.get(childFieldId);
+        if (loader) {
+          this._log(`Cascade: ${changedFieldName} changed → reloading options for field ${childFieldId}`);
+          loader();
+        }
+      });
+    };
+
+    // Helper: build workflow input for enumSourceWorkflow, merging static input + inputFromFields
+    const buildWorkflowInput = (wfConfig) => {
+      const input = {};
+
+      // Start with static inputs (may contain Jinja templates — passed as-is, server evaluates them)
+      if (wfConfig.input) {
+        Object.assign(input, wfConfig.input);
+      }
+
+      // Overlay with current form field values for inputFromFields
+      if (wfConfig.inputFromFields) {
+        Object.entries(wfConfig.inputFromFields).forEach(([inputKey, config]) => {
+          if (!config.isActive) return;
+          const parentName = fieldIdToName.get(config.fieldId);
+          if (parentName && formValues[parentName] !== undefined && formValues[parentName] !== null) {
+            input[inputKey] = formValues[parentName];
+          }
+        });
+      }
+
+      return input;
+    };
+
+    // Helper: check if all required inputFromFields have values (skip loading if not)
+    const hasRequiredInputs = (wfConfig) => {
+      if (!wfConfig.inputFromFields) return true;
+      for (const [inputKey, config] of Object.entries(wfConfig.inputFromFields)) {
+        if (!config.isActive) continue;
+        if (!config.isRequired) continue;
+        const parentName = fieldIdToName.get(config.fieldId);
+        if (!parentName) return false;
+        const val = formValues[parentName];
+        if (val === undefined || val === null || val === '') return false;
+      }
+      return true;
+    };
+
+    // Helper: check if a value contains server-side Jinja templates (can't evaluate client-side)
+    const _isJinjaTemplate = (v) => typeof v === 'string' && (v.includes('{' + '{') || v.includes('{' + '%'));
+
     // Function to update field visibility based on current form values
     const updateFieldVisibility = () => {
       sortedFields.forEach(field => {
@@ -9343,10 +10068,30 @@ const RewstDOM = {
         const wrapper = fieldWrappers.get(field.id);
         if (!wrapper) return;
 
-        const evaluation = rewstApp.evaluateFieldConditions(field, formValues);
+        // Start with schema.hidden as the default visibility
+        let visible = field.schema.hidden !== true;
 
-        // Show or hide the field
-        if (evaluation.visible) {
+        // Check conditions
+        if (field.conditions && field.conditions.length > 0) {
+          const evaluation = rewstApp.evaluateFieldConditions(field, formValues);
+
+          // If condition has Jinja requiredValue, we can't evaluate client-side
+          // For 'show' conditions with Jinja: default to hidden (server would evaluate)
+          // For 'hide' conditions with Jinja: default to visible
+          const hasJinjaShow = field.conditions.some(c => c.action === 'show' && _isJinjaTemplate(c.requiredValue));
+          const hasJinjaHide = field.conditions.some(c => c.action === 'hide' && _isJinjaTemplate(c.requiredValue));
+
+          if (hasJinjaShow || hasJinjaHide) {
+            // Can't evaluate Jinja client-side — use schema.hidden as truth
+            visible = field.schema.hidden !== true;
+          } else {
+            // Normal client-side evaluation
+            visible = evaluation.visible;
+          }
+        }
+
+        // Apply visibility
+        if (visible) {
           wrapper.style.display = '';
           wrapper.classList.remove('hidden');
         } else {
@@ -9357,10 +10102,9 @@ const RewstDOM = {
         // Update required status - CRITICAL: Remove required from hidden fields
         const input = wrapper.querySelector(`[name="${field.id}"]`);
         if (input && field.type !== 'TEXT') {
-          if (evaluation.visible) {
-            input.required = evaluation.required;
+          if (visible) {
+            input.required = field.schema?.required || false;
           } else {
-            // Remove required from hidden fields to prevent validation errors
             input.required = false;
           }
         }
@@ -9378,9 +10122,24 @@ const RewstDOM = {
 
       // Handle TEXT type (markdown/static text)
       if (field.type === 'TEXT' && schema.static) {
+        const rawText = schema.text || '';
+
+        // Skip if hidden by schema
+        if (schema.hidden === true) continue;
+
+        // Skip TEXT fields that contain Jinja templates (server-side only)
+        if (_isJinjaTemplate(rawText)) continue;
+
+        // Skip if field has Jinja show conditions (can't evaluate client-side, default to hidden)
+        if (field.conditions && field.conditions.some(c => c.action === 'show' && _isJinjaTemplate(c.requiredValue))) {
+          continue;
+        }
+
         const textDiv = document.createElement('div');
         textDiv.className = 'text-gray-700 mb-4';
-        textDiv.innerHTML = this._markdownToHtml(schema.text || '');
+        // Fix literal \n in text before markdown conversion
+        const cleanedText = rawText.replace(/\\n/g, '\n');
+        textDiv.innerHTML = this._markdownToHtml(cleanedText);
         form.appendChild(textDiv);
         continue;
       }
@@ -9426,6 +10185,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -9439,6 +10199,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -9453,6 +10214,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = parseFloat(e.target.value) || 0;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -9466,6 +10228,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -9493,6 +10256,7 @@ const RewstDOM = {
                 if (e.target.checked) {
                   formValues[schema.name] = e.target.value;
                   updateFieldVisibility();
+                  triggerCascade(schema.name);
                 }
               });
 
@@ -9525,6 +10289,7 @@ const RewstDOM = {
           selectInput.addEventListener('change', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
 
           // Check for workflow-based options
@@ -9539,23 +10304,50 @@ const RewstDOM = {
             refreshBtn.title = 'Refresh options';
 
             const loadOptions = async () => {
-              refreshBtn.classList.add('animate-spin');
-              try {
-                const workflowConfig = schema.enumSourceWorkflow;
+              const workflowConfig = schema.enumSourceWorkflow;
 
-                // Try to get last execution first
+              // Skip if required parent fields don't have values yet
+              if (!hasRequiredInputs(workflowConfig)) {
+                this._log(`Skipping options load for ${schema.name} — waiting for required parent fields`);
+                return;
+              }
+
+              refreshBtn.classList.add('animate-spin');
+              // Show loading state in dropdown
+              selectInput.innerHTML = '';
+              const loadingOpt = document.createElement('option');
+              loadingOpt.value = '';
+              loadingOpt.textContent = 'Loading...';
+              selectInput.appendChild(loadingOpt);
+
+              try {
+                // Build input from static config + current form field values
+                const workflowInput = buildWorkflowInput(workflowConfig);
+
+                // Try trigger-based execution first (most forms use triggers), then fall back
                 let result;
-                try {
-                  result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
-                } catch (error) {
-                  this._log('No previous execution found, running workflow...');
-                  result = await rewstApp.runWorkflowSmart(
-                    workflowConfig.id,
-                    workflowConfig.input || {}
-                  );
+                // Only treat as "has dynamic inputs" if there are ACTIVE entries with real fieldIds
+                const hasInputFromFields = workflowConfig.inputFromFields &&
+                  Object.values(workflowConfig.inputFromFields).some(c => c.isActive && c.fieldId);
+
+                if (hasInputFromFields) {
+                  // Has dynamic inputs from form fields — must run workflow fresh with current values
+                  this._log(`Running workflow for ${schema.name} with dynamic inputs:`, workflowInput);
+                  result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                } else {
+                  // No dynamic inputs — try last execution first (faster), fall back to running
+                  if (!workflowConfig.id) {
+                    throw new Error(`enumSourceWorkflow has no workflow ID for field ${schema.name}`);
+                  }
+                  try {
+                    result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
+                  } catch (error) {
+                    this._log('No previous execution found, running workflow...');
+                    result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                  }
                 }
 
-                // Clear existing options except placeholder
+                // Clear and rebuild options
                 selectInput.innerHTML = '';
                 selectInput.appendChild(placeholderOption.cloneNode(true));
 
@@ -9579,14 +10371,24 @@ const RewstDOM = {
                     option.textContent = item[workflowConfig.labelKey] || item.label || item;
                     selectInput.appendChild(option);
                   });
+                  this._log(`Loaded ${optionsData.length} options for ${schema.name}`);
                 }
               } catch (error) {
                 console.error('Failed to load dropdown options:', error);
-                this.showError(`Failed to load options for ${label}`);
+                selectInput.innerHTML = '';
+                selectInput.appendChild(placeholderOption.cloneNode(true));
+                const errorOpt = document.createElement('option');
+                errorOpt.value = '';
+                errorOpt.textContent = '(Failed to load options)';
+                errorOpt.disabled = true;
+                selectInput.appendChild(errorOpt);
               } finally {
                 refreshBtn.classList.remove('animate-spin');
               }
             };
+
+            // Register loader for cascade system
+            fieldOptionLoaders.set(field.id, loadOptions);
 
             refreshBtn.onclick = loadOptions;
 
@@ -9594,8 +10396,10 @@ const RewstDOM = {
             controlWrapper.appendChild(refreshBtn);
             dropdownWrapper.appendChild(controlWrapper);
 
-            // Load options on form creation using last execution
-            loadOptions();
+            // Load options on form creation (only if no required parent inputs, or if autoPopulate is set)
+            if (!schema.enumSourceWorkflow.inputFromFields || hasRequiredInputs(schema.enumSourceWorkflow) || schema.autoPopulate) {
+              loadOptions();
+            }
           } else if (schema.enum && Array.isArray(schema.enum)) {
             // Static options
             schema.enum.forEach(opt => {
@@ -9743,6 +10547,7 @@ const RewstDOM = {
                 renderTags();
                 renderDropdown();
                 updateFieldVisibility();
+                triggerCascade(schema.name);
               };
 
               dropdownMenu.appendChild(optionEl);
@@ -9780,20 +10585,40 @@ const RewstDOM = {
             refreshBtn.title = 'Refresh options';
 
             const loadOptions = async () => {
+              const workflowConfig = schema.enumSourceWorkflow;
+
+              // Skip if required parent fields don't have values yet
+              if (!hasRequiredInputs(workflowConfig)) {
+                this._log(`Skipping multiselect options load for ${schema.name} — waiting for required parent fields`);
+                return;
+              }
+
               refreshBtn.classList.add('animate-spin');
               try {
-                const workflowConfig = schema.enumSourceWorkflow;
+                // Build input from static config + current form field values
+                const workflowInput = buildWorkflowInput(workflowConfig);
 
-                // Try to get last execution first
+                // Cache-first: try last execution (instant) then fall back to fresh run.
+                // Only run fresh when parent fields actually have values (cascade triggered
+                // with real input) — avoids slow cold-start on every form open.
                 let result;
-                try {
-                  result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
-                } catch (error) {
-                  this._log('No previous execution found, running workflow...');
-                  result = await rewstApp.runWorkflowSmart(
-                    workflowConfig.id,
-                    workflowConfig.input || {}
-                  );
+                const hasInputFromFields = workflowConfig.inputFromFields &&
+                  Object.values(workflowConfig.inputFromFields).some(c => c.isActive && c.fieldId);
+                const hasMeaningfulInput = hasInputFromFields &&
+                  Object.values(workflowInput).some(v => v !== null && v !== undefined && v !== '' && v !== false);
+
+                if (hasMeaningfulInput) {
+                  // Parent fields have values → run fresh for accurate filtered results
+                  this._log(`Running workflow for multiselect ${schema.name} with inputs:`, workflowInput);
+                  result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                } else {
+                  // No meaningful parent values (initial load or empty deps) → use cache
+                  try {
+                    result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
+                  } catch (error) {
+                    this._log('No previous execution found, running workflow...');
+                    result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                  }
                 }
 
                 // Get the data from output
@@ -9817,17 +10642,23 @@ const RewstDOM = {
                       label: item[workflowConfig.labelKey] || item.label || item
                     });
                   });
+                  this._log(`Loaded ${availableOptions.length} multiselect options for ${schema.name}`);
                 }
 
                 renderTags();
                 renderDropdown();
               } catch (error) {
                 console.error('Failed to load multiselect options:', error);
-                this.showError(`Failed to load options for ${label}`);
+                availableOptions = [{ value: '', label: '(Failed to load options)' }];
+                renderTags();
+                renderDropdown();
               } finally {
                 refreshBtn.classList.remove('animate-spin');
               }
             };
+
+            // Register loader for cascade system
+            fieldOptionLoaders.set(field.id, loadOptions);
 
             refreshBtn.onclick = loadOptions;
 
@@ -9835,8 +10666,10 @@ const RewstDOM = {
             containerWithRefresh.appendChild(multiselectWrapper);
             containerWithRefresh.appendChild(refreshBtn);
 
-            // Load options on form creation using last execution
-            loadOptions();
+            // Load options on form creation (only if no required parent inputs pending)
+            if (!schema.enumSourceWorkflow.inputFromFields || hasRequiredInputs(schema.enumSourceWorkflow) || schema.autoPopulate) {
+              loadOptions();
+            }
 
             input = containerWithRefresh;
           } else if (schema.items && schema.items.enum) {
@@ -9880,6 +10713,7 @@ const RewstDOM = {
           input.addEventListener('change', (e) => {
             formValues[schema.name] = e.target.checked;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
 
           const checkboxLabel = document.createElement('label');
@@ -9907,6 +10741,7 @@ const RewstDOM = {
           input.addEventListener('change', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -9919,6 +10754,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
       }
@@ -10632,7 +11468,8 @@ const RewstDOM = {
       searchFn = null,
       showClearButton = true,
       noResultsText = 'No results found',
-      maxResults = 10
+      maxResults = 10,
+      portalMode = false
     } = options;
 
     // State
@@ -10688,8 +11525,15 @@ const RewstDOM = {
 
     // Create dropdown
     const dropdown = document.createElement('div');
-    dropdown.className = 'hidden absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
-    container.appendChild(dropdown);
+    if (portalMode) {
+      // Portal mode: append to body with fixed positioning to escape overflow:hidden parents
+      dropdown.className = 'hidden bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
+      dropdown.style.cssText = 'position:fixed;z-index:99999;';
+      document.body.appendChild(dropdown);
+    } else {
+      dropdown.className = 'hidden absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
+      container.appendChild(dropdown);
+    }
 
     // Default search function
     const defaultSearchFn = (item, searchTerm) => {
@@ -10819,6 +11663,15 @@ const RewstDOM = {
       input.focus();
     };
 
+    // Position portal dropdown below the input
+    const positionPortalDropdown = () => {
+      if (!portalMode) return;
+      const rect = inputWrapper.getBoundingClientRect();
+      dropdown.style.top = (rect.bottom + 4) + 'px';
+      dropdown.style.left = rect.left + 'px';
+      dropdown.style.width = rect.width + 'px';
+    };
+
     // Show dropdown with all or filtered items
     const showDropdown = () => {
       const searchTerm = input.value.trim();
@@ -10832,6 +11685,7 @@ const RewstDOM = {
       }
 
       renderDropdown();
+      positionPortalDropdown();
       dropdown.classList.remove('hidden');
       isDropdownOpen = true;
     };
@@ -10853,6 +11707,7 @@ const RewstDOM = {
       }
 
       renderDropdown();
+      positionPortalDropdown();
       dropdown.classList.remove('hidden');
       isDropdownOpen = true;
     });
@@ -10909,10 +11764,21 @@ const RewstDOM = {
 
     // Click outside to close
     document.addEventListener('click', (e) => {
-      if (!container.contains(e.target)) {
+      if (!container.contains(e.target) && !dropdown.contains(e.target)) {
         hideDropdown();
       }
     });
+
+    // Clean up portal dropdown when container is removed from DOM
+    if (portalMode) {
+      const observer = new MutationObserver(() => {
+        if (!document.body.contains(container)) {
+          dropdown.remove();
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
 
     // Public API
     container.getValue = () => selectedItem ? selectedItem[valueKey] : null;
@@ -10924,6 +11790,12 @@ const RewstDOM = {
       }
     };
     container.clear = () => clearSelection();
+    container.updateItems = (newItems) => {
+      items = newItems;
+      if (isDropdownOpen) {
+        showDropdown();
+      }
+    };
 
     return container;
   },
@@ -11442,13 +12314,33 @@ if (typeof module !== 'undefined' && module.exports) {
 
       // GLOBAL CONFIGURATION
       const DAYS_TO_FETCH = 30;
-      const CACHE_VERSION = '1.6'; // Increment this to invalidate all caches - bumped for auto-exclude feature
+      const CACHE_VERSION = '2.5'; // Safety fixes + busy-workflow failures-first sample (getWorkflowExecutionSample)
       const CACHE_DURATION = 5 * 24 * 60 * 60 * 1000; // 5 days in milliseconds
       const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
 
-      // Auto-exclude busy workflows config
-      const AUTO_EXCLUDE_THRESHOLD = 5000;  // Workflows with more executions get excluded from main fetch
-      const ALWAYS_EXCLUDE_WORKFLOW_IDS = []; // Manual overrides (add workflow IDs here to always exclude)
+      // Auto-exclude busy workflows config.
+      // Excluded workflows still appear on the dashboard via aggregate stats
+      // (workflowStats / dashboardData.aggregates) — they just don't get individual
+      // executions fetched in the bulk pass, which is what triggers the backend N+1.
+      //
+      // Three layers, each works for every tenant without per-tenant config:
+      //   1. ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS — regex against workflow.name
+      //      (catches Rewst-internal workflow naming conventions across all customers)
+      //   2. AUTO_EXCLUDE_THRESHOLD_CRON — stricter limit for Cron Job triggers
+      //   3. AUTO_EXCLUDE_THRESHOLD — universal hard cap for any workflow type
+      const AUTO_EXCLUDE_THRESHOLD = 500;       // Universal hard cap (any trigger type)
+      const AUTO_EXCLUDE_THRESHOLD_CRON = 100;  // Stricter cap for Cron Job triggers (predictable, high-volume, low per-execution value)
+
+      // Name-pattern blacklist — workflows whose name matches ANY regex pattern here
+      // are always excluded from the bulk fetch, regardless of execution count.
+      // Patterns are matched against `workflow.name`. Empty by default — populate
+      // only if you have a clear product reason to hide specific workflow naming
+      // conventions from per-execution drill-down on every tenant.
+      const ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS = [];
+
+      // ID-based escape hatch — populate ONLY for tenant-specific overrides that the
+      // dynamic rules above can't catch. Leave empty by default.
+      const ALWAYS_EXCLUDE_WORKFLOW_IDS = [];
 
       // ============================================
       // INDEXEDDB CACHE LAYER WITH LOCALSTORAGE FALLBACK
@@ -11599,13 +12491,23 @@ if (typeof module !== 'undefined' && module.exports) {
 
         // localStorage fallback methods
         _lsSave(cacheKey, cacheObject) {
+          const serialized = JSON.stringify(cacheObject);
+          const sizeKB = Math.round(serialized.length / 1024);
+          if (sizeKB > 400) {
+            debugWarn(`⚠️ _lsSave: cache object too large (${sizeKB}KB) — skipping localStorage, using memory only`);
+            return;
+          }
           try {
-            localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
+            localStorage.setItem(cacheKey, serialized);
           } catch (e) {
             if (e.name === 'QuotaExceededError') {
               debugWarn('⚠️ localStorage quota exceeded, clearing old caches...');
               this._lsClearByPrefix(CACHE_KEY_PREFIX);
-              localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
+              try {
+                localStorage.setItem(cacheKey, serialized);
+              } catch (retryErr) {
+                debugWarn(`⚠️ _lsSave: retry also failed (${sizeKB}KB) — giving up on localStorage`);
+              }
             } else { throw e; }
           }
         },
@@ -12538,16 +13440,36 @@ async function initializeAdvancedFilters() {
         let fetchedCount = 0;
         let errorCount = 0;
 
-        const orgPromises = Object.entries(byOrg).map(async ([orgId, formMap]) => {
-          const formIds = Array.from(formMap.keys());
+        // Flatten all (orgId, formId) pairs into a single bounded queue
+        const toFetch = [];
+        for (const [orgId, formMap] of Object.entries(byOrg)) {
+          for (const formId of formMap.keys()) {
+            if (!formNameCache[formId]) toFetch.push({ orgId, formId });
+          }
+        }
 
-          for (const formId of formIds) {
-            if (formNameCache[formId]) continue;
+        const FORM_FETCH_CONCURRENCY = 5;
+        const FORM_FETCH_MAX = 100;
+        const FORM_FETCH_DEADLINE = Date.now() + 25000; // 25s hard cap
+        const capped = toFetch.slice(0, FORM_FETCH_MAX);
+        if (toFetch.length > FORM_FETCH_MAX) {
+          debugWarn(`⚠️ fetchMissingFormNames: capped at ${FORM_FETCH_MAX} (had ${toFetch.length})`);
+        }
 
+        for (let i = 0; i < capped.length; i += FORM_FETCH_CONCURRENCY) {
+          if (Date.now() > FORM_FETCH_DEADLINE) {
+            debugWarn(`⚠️ fetchMissingFormNames: deadline hit at item ${i}/${capped.length}`);
+            break;
+          }
+          const batch = capped.slice(i, i + FORM_FETCH_CONCURRENCY);
+          await Promise.all(batch.map(async ({ orgId, formId }) => {
             try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 8000);
               const response = await fetch('/graphql', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
                 body: JSON.stringify({
                   query: `query GetForm($id: ID!, $orgId: ID) {
                     form(where: { id: $id }, orgContextId: $orgId) {
@@ -12558,7 +13480,7 @@ async function initializeAdvancedFilters() {
                   variables: { id: formId, orgId: orgId }
                 })
               });
-
+              clearTimeout(timeoutId);
               const data = await response.json();
               if (data?.data?.form?.name) {
                 formNameCache[formId] = data.data.form.name;
@@ -12568,10 +13490,8 @@ async function initializeAdvancedFilters() {
               errorCount++;
               debugWarn(`Failed to fetch form ${formId}:`, err.message);
             }
-          }
-        });
-
-        await Promise.all(orgPromises);
+          }));
+        }
 
         let updatedCount = 0;
         for (const { exec, formId } of missingFormNames) {
@@ -13154,29 +14074,59 @@ function stopMorphAnimation() {
           const workflowStats = await rewst.getWorkflowStatsByOrg(rewst.orgId, startDate, endDate);
           debugLog(`📊 Workflow stats: ${workflowStats.length} workflows analyzed`);
 
+          // Build a quick lookup: workflowId -> set of trigger type names.
+          // workflows array (from rewst.getAllWorkflows) has triggers[].triggerType.name.
+          const workflowTriggerTypes = new Map(
+            (workflows || []).map(w => [
+              w.id,
+              new Set((w.triggers || []).map(t => t?.triggerType?.name).filter(Boolean))
+            ])
+          );
+          const isCronWorkflow = (workflowId) =>
+            workflowTriggerTypes.get(workflowId)?.has('Cron Job') === true;
+
+          // Returns the reason a workflow stat row should be auto-excluded, or null if not.
+          // Order matters: name-pattern is the most specific signal so we check it first.
+          const exclusionReason = (statRow) => {
+            const name = statRow?.name || '';
+            for (const re of ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS) {
+              if (re.test(name)) return `name pattern ${re}`;
+            }
+            if (statRow.totalExecutions > AUTO_EXCLUDE_THRESHOLD) {
+              return `>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions`;
+            }
+            if (isCronWorkflow(statRow.id) && statRow.totalExecutions > AUTO_EXCLUDE_THRESHOLD_CRON) {
+              return `cron >${AUTO_EXCLUDE_THRESHOLD_CRON.toLocaleString()} executions`;
+            }
+            return null;
+          };
+          const shouldAutoExclude = (statRow) => exclusionReason(statRow) !== null;
+
           // Show top 10 workflows by execution count for visibility
           const sortedByExecs = [...workflowStats].sort((a, b) => b.totalExecutions - a.totalExecutions);
           debugLog(`📊 Top 10 workflows by execution count:`);
           sortedByExecs.slice(0, 10).forEach((w, i) => {
-            const marker = w.totalExecutions > AUTO_EXCLUDE_THRESHOLD ? '🚫' : '✅';
-            debugLog(`   ${i + 1}. ${marker} ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+            const reason = exclusionReason(w);
+            const marker = reason ? '🚫' : '✅';
+            const cronTag = isCronWorkflow(w.id) ? ' [CRON]' : '';
+            debugLog(`   ${i + 1}. ${marker} ${w.name}${cronTag}: ${w.totalExecutions.toLocaleString()} executions${reason ? ` — ${reason}` : ''}`);
           });
 
-          // Identify busy workflows that exceed threshold
-          const busyWorkflows = workflowStats.filter(w => w.totalExecutions > AUTO_EXCLUDE_THRESHOLD);
+          // Identify busy workflows that match ANY exclusion rule (name pattern, universal, or cron).
+          const busyWorkflows = workflowStats.filter(shouldAutoExclude);
           const excludeWorkflowIds = [
             ...busyWorkflows.map(w => w.id),
             ...ALWAYS_EXCLUDE_WORKFLOW_IDS
           ];
 
-          debugLog(`📊 Threshold: ${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions`);
-          if (excludeWorkflowIds.length > 0) {
-            debugLog(`📋 Busy workflows (>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions):`);
+          debugLog(`📊 Exclusion rules: name patterns=${ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS.length} | universal>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} | cron>${AUTO_EXCLUDE_THRESHOLD_CRON.toLocaleString()}`);
+          if (busyWorkflows.length > 0) {
+            debugLog(`📋 Auto-excluded ${busyWorkflows.length} workflow(s):`);
             busyWorkflows.forEach(w => {
-              debugLog(`   • ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+              debugLog(`   • ${w.name}: ${w.totalExecutions.toLocaleString()} executions — ${exclusionReason(w)}`);
             });
           } else {
-            debugLog(`✅ No workflows exceed threshold`);
+            debugLog(`✅ No workflows matched any exclusion rule`);
           }
 
           // Workflow scope: 'parents' | 'subs' | 'both'
@@ -13185,16 +14135,33 @@ function stopMorphAnimation() {
           RewstApp.WORKFLOW_SCOPE = 'parents';
 
           // Phase 2: PARALLEL FETCH - Forms + everything else at the same time
+          //
+          // Detect form workflows by trigger type. Previously this used
+          // `.toLowerCase().includes('form')` which falsely matched "App Platform"
+          // (the lowercased substring "plat-form" contains "form"). That caused every
+          // App Platform workflow to flow into the per-workflow form fetch path,
+          // *bypassing the auto-exclude entirely*. We now match strictly on either
+          //   - exact trigger type name "Form Submission", or
+          //   - presence of a non-null formId (the most reliable signal).
+          //
+          // Then we subtract any auto-excluded workflow IDs so the form path doesn't
+          // re-fetch a workflow the rest path already skipped.
+          const excludeIdSet = new Set(excludeWorkflowIds);
           const formWorkflowIds = workflows
             .filter(w => w.triggers?.some(t =>
-              t.triggerType?.name?.toLowerCase().includes('form')
+              t?.triggerType?.name === 'Form Submission' || t?.formId != null
             ))
-            .map(w => w.id);
+            .map(w => w.id)
+            .filter(id => !excludeIdSet.has(id));
 
           updateLoadingProgress(15, 'Fetching executions...', 'fetch');
           debugLog(`🚀 Phase 2: Parallel fetch - ${formWorkflowIds.length} forms + ${workflows.length - formWorkflowIds.length} other workflows`);
 
-          // Fire both requests in parallel
+          // Fire all requests in parallel
+          // - formPromise / restPromise: existing per-execution fetch (still needed for trigger info, user data, drill-downs)
+          // - aggregatesPromise: NEW — sub-second aggregate endpoints for totals/trends
+          //   Replaces what we used to compute by summing exec.numSuccessfulTasks across thousands of rows.
+          //   Backend resolves these via dedicated aggregate queries (no UNION-ALL fan-out into task_logs).
           const formPromise = formWorkflowIds.length > 0
             ? rewst.getRecentExecutions(true, days, null, false, orgIds, {
                 timeout: 45000,
@@ -13203,29 +14170,89 @@ function stopMorphAnimation() {
               })
             : Promise.resolve([]);
 
-          const restPromise = rewst.getRecentExecutions(true, days, null, false, orgIds, {
-            timeout: 60000,
-            excludeWorkflowIds: formWorkflowIds.length > 0 ? formWorkflowIds : undefined,
-            onProgress: ({ phase, completed, total, status }) => {
-              if (phase === 'batches' && total > 0) {
-                // Map batch progress to 15-85% of the bar
-                const batchPercent = 15 + Math.round((completed / total) * 70);
-                updateLoadingProgress(batchPercent, `Fetching: ${completed}/${total} batches...`);
-              } else if (phase === 'enriching') {
-                updateLoadingProgress(85, 'Enriching data...', 'enrich');
-              } else if (phase === 'complete') {
-                updateLoadingProgress(100, 'Complete!');
-              }
-            }
+          // INVERTED FILTER STRATEGY (2026-05-06)
+          // ---------------------------------------------------------------
+          // We used to pass `excludeWorkflowIds` (a `_nin` filter) here. Live testing
+          // showed `_nin` is dramatically slower than `_in` on this backend because
+          // the workflow_executions(workflow_id) index can satisfy `_in` via index
+          // range scans but cannot satisfy `_nin` (forces a full scan). On a 30-day
+          // window, `_nin` with 32 IDs hit the 50s backend query_timeout while `_in`
+          // with 85 IDs returned 1069 rows in 3.2s with the same field selection.
+          // See local/research/2026-05-06-in-vs-nin-finding.md for full test data.
+          //
+          // Build the *include* list explicitly: every workflow in workflowStats that
+          // (a) had any executions in the window, (b) the form path isn't already
+          // handling, and (c) wasn't auto-excluded.
+          const formWorkflowIdSet = new Set(formWorkflowIds);
+          const excludeWorkflowIdSet = new Set(excludeWorkflowIds);
+          const restIncludeIds = (workflowStats || [])
+            .filter(w => w.totalExecutions > 0)
+            .map(w => w.id)
+            .filter(id => !formWorkflowIdSet.has(id))
+            .filter(id => !excludeWorkflowIdSet.has(id));
+
+          debugLog(`🎯 Rest-path include list: ${restIncludeIds.length} workflow(s) with activity (excluded ${excludeWorkflowIds.length}, form-handled ${formWorkflowIds.length})`);
+
+          const restPromise = restIncludeIds.length > 0
+            ? rewst.getRecentExecutions(true, days, null, false, orgIds, {
+                timeout: 60000,
+                includeOnlyWorkflowIds: restIncludeIds,
+                onProgress: ({ phase, completed, total, status }) => {
+                  if (phase === 'batches' && total > 0) {
+                    const batchPercent = 15 + Math.round((completed / total) * 70);
+                    updateLoadingProgress(batchPercent, `Fetching: ${completed}/${total} batches...`);
+                  } else if (phase === 'enriching') {
+                    updateLoadingProgress(85, 'Enriching data...', 'enrich');
+                  } else if (phase === 'complete') {
+                    updateLoadingProgress(100, 'Complete!');
+                  }
+                }
+              })
+            : Promise.resolve([]);
+
+          // Aggregates fire in parallel — sub-second, no per-execution scan
+          const aggregatesPromise = rewst.getDashboardAggregates(days, {
+            includeSubWorkflows: false,
+            rollUpTimeSaved: true
+          }).catch(err => {
+            debugLog(`⚠️ Aggregate fetch failed (non-blocking): ${err.message}`);
+            return { stats: null, dailyTasks: [], dailyTimeSaved: [], timeSavedByWorkflow: [], timeSavedBySubOrg: [] };
           });
 
-          // Wait for both to complete
-          const [formExecutions, allExecutions] = await Promise.all([formPromise, restPromise]);
+          // Busy-workflow samples: failures-first lightweight fetch for auto-excluded workflows.
+          // Two parallel queries per workflow (failures + successes), capped at 5 concurrent workflows.
+          // Each returns at most 50 failures + 100 successes — just id/status/createdAt/humanSecondsSaved.
+          const busySamplesPromise = (async () => {
+            const toSample = busyWorkflows.slice(0, 15);
+            if (toSample.length === 0) return [];
+            debugLog(`🔍 Sampling ${toSample.length} busy workflow(s) (failures-first)...`);
+            const sampleOrgId = rewst.orgId;
+            const results = [];
+            const CONCURRENCY = 5;
+            for (let i = 0; i < toSample.length; i += CONCURRENCY) {
+              const batch = toSample.slice(i, i + CONCURRENCY);
+              const batchResults = await Promise.all(
+                batch.map(w => rewst.getWorkflowExecutionSample(w.id, sampleOrgId, days))
+              );
+              for (const sample of batchResults) results.push(...sample);
+            }
+            debugLog(`🔍 Busy workflow samples: ${results.length} total executions`);
+            return results;
+          })().catch(err => {
+            debugWarn(`⚠️ Busy workflow sampling failed (non-blocking): ${err.message}`);
+            return [];
+          });
 
-          debugLog(`✅ Parallel fetch complete: ${formExecutions.length} forms, ${allExecutions.length} others`);
+          // Wait for all four to complete
+          const [formExecutions, allExecutions, aggregates, busySamples] = await Promise.all([formPromise, restPromise, aggregatesPromise, busySamplesPromise]);
+
+          debugLog(`✅ Parallel fetch complete: ${formExecutions.length} forms, ${allExecutions.length} others, ${busySamples.length} busy-workflow samples`);
+          if (aggregates && aggregates.stats) {
+            debugLog(`📊 Aggregates: ${aggregates.stats.succeeded} succeeded, ${aggregates.stats.failed} failed, ${aggregates.dailyTasks.length} days of task data`);
+          }
 
           // Merge: dedupe by execution ID (safety check in case filtering fails)
-          const mergedExecutions = [...formExecutions, ...allExecutions];
+          const mergedExecutions = [...formExecutions, ...allExecutions, ...busySamples];
           let executions = _.uniqBy(mergedExecutions, 'id');
 
           const duplicateCount = mergedExecutions.length - executions.length;
@@ -13245,7 +14272,7 @@ function stopMorphAnimation() {
             isStatsOnly: true  // Flag to indicate this is aggregate-only data
           }));
 
-          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs, excludedWorkflows, workflowStats };
+          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs, excludedWorkflows, workflowStats, aggregates };
 
           // Store globally
           window.dashboardData = freshData;
@@ -13797,7 +14824,11 @@ function renderDashboard() {
             const dateStr = (date.getMonth() + 1) + '/' + date.getDate();
 
             const triggerType = exec.triggerInfo?.type || 'Unknown';
-            const tasksCompleted = exec.numSuccessfulTasks || 0;
+            // Switched from summing numSuccessfulTasks to counting executions:
+            // numSuccessfulTasks is no longer fetched in bulk (it triggered the heavy
+            // addSuccessfulTaskCounts query on the backend). Counting executions per day
+            // per trigger type tells the same trend story.
+            const executionCount = 1;
 
             if (!topChartTaskUsageData[dateStr]) {
                 topChartTaskUsageData[dateStr] = {
@@ -13810,7 +14841,7 @@ function renderDashboard() {
                 topChartTaskUsageData[dateStr].types[triggerType] = 0;
             }
 
-            topChartTaskUsageData[dateStr].types[triggerType] += tasksCompleted;
+            topChartTaskUsageData[dateStr].types[triggerType] += executionCount;
         });
 
         const topChartSortedTaskDates = Object.keys(topChartTaskUsageData).sort((a, b) =>
@@ -14007,7 +15038,7 @@ function renderDashboard() {
                 }
             });
 
-            document.getElementById('chart-title-time').textContent = 'Task Usage by Trigger';
+            document.getElementById('chart-title-time').textContent = 'Executions by Trigger';
             RewstDOM.place(canvasWrapper, '#chart-time-trend');
         };
 
@@ -14148,14 +15179,14 @@ function renderDashboard() {
             const taskTypeData = [];
             const taskTypeTotals = {};
 
-            // Filter out sub-workflows to avoid double-counting tasks
-            // (parent's numSuccessfulTasks already includes sub-workflow tasks)
+            // Counts executions per trigger type. Filter out sub-workflows so each
+            // parent execution is counted once. Switched from summing numSuccessfulTasks
+            // to counting executions because numSuccessfulTasks is no longer in the bulk fetch.
             filteredExecutions
                 .filter(exec => !exec.parentExecutionId) // Only count root/parent executions
                 .forEach(exec => {
                     const triggerType = exec.triggerInfo?.type || 'Unknown';
-                    const tasks = exec.numSuccessfulTasks || 0;
-                    taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + tasks;
+                    taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + 1;
                 });
 
             Object.entries(taskTypeTotals).forEach(([type, count]) => {
@@ -14246,7 +15277,7 @@ function renderDashboard() {
                 }]
             });
 
-            document.getElementById('doughnut-title').textContent = 'Tasks by Trigger Type';
+            document.getElementById('doughnut-title').textContent = 'Executions by Trigger Type';
             RewstDOM.place(canvasWrapper, '#chart-form-types');
         };
 
@@ -14647,7 +15678,9 @@ function renderDashboard() {
                     total_runs: 0,
                     succeeded: 0,
                     failed: 0,
-                    total_tasks: 0,
+                    // total_tasks dropped: numSuccessfulTasks no longer in bulk fetch.
+                    // Per-workflow task totals available from dashboardData.workflowStats
+                    // (workflow-level only — not split by trigger type, so we don't surface here).
                     total_hours_saved: 0,
                     workflow_missing: !workflowExists && !workflowId,
                     is_sub_workflow: isSubWorkflow  // Track if this group contains sub-workflows
@@ -14656,12 +15689,6 @@ function renderDashboard() {
 
             // Count all executions (root and sub show as separate rows with their own counts)
             executionGroups[groupKey].total_runs++;
-
-            // For sub-workflows, don't add tasks (to avoid double-counting with parent)
-            // Only count tasks for root executions
-            if (!isSubWorkflow) {
-                executionGroups[groupKey].total_tasks += exec.tasksUsed || 0;
-            }
 
             // Add hours for all executions (each has its own workflow's humanSecondsSaved)
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
@@ -14683,12 +15710,11 @@ function renderDashboard() {
 
         const executionsTable = RewstDOM.createTable(executionSummary, {
             title: '<span class="material-icons text-rewst-orange">table_chart</span> Workflow Execution Summary',
-            columns: ['workflow', 'workflow_type', 'type', 'total_tasks', 'total_runs', 'succeeded', 'failed', 'hours_saved'],
+            columns: ['workflow', 'workflow_type', 'type', 'total_runs', 'succeeded', 'failed', 'hours_saved'],
             headers: {
                 workflow: 'Workflow',
                 workflow_type: 'Workflow Type',
                 type: 'Trigger Type',
-                total_tasks: 'Tasks Used',
                 total_runs: 'Total Runs',
                 succeeded: 'Succeeded',
                 failed: 'Failed',
@@ -14745,14 +15771,6 @@ function renderDashboard() {
                         return '<span class="badge">' + value + '</span>';
                     }
                 },
-                total_tasks: (value) => {
-                    if (value >= 1000000) {
-                        return (value / 1000000).toFixed(1) + 'M';
-                    } else if (value >= 1000) {
-                        return (value / 1000).toFixed(1) + 'K';
-                    }
-                    return value.toLocaleString();
-                }
             }
         });
         RewstDOM.place(executionsTable, '#table-executions');
@@ -14952,11 +15970,16 @@ function renderWorkflowMetrics(execs) {
   );
   const hoursSaved = totalSecondsSaved / 3600;
   const monetaryValue = (hoursSaved * 50).toFixed(0);
-  const totalTasksUsed = execs.reduce(
-    (sum, e) => sum + (e.tasksUsed || 0),
-    0
-  );
-
+  // Task totals come from the org-wide workflow stats aggregate (already loaded in template
+   // via getWorkflowStatsByOrg). We can no longer sum exec.tasksUsed because the bulk
+   // workflowExecutions query no longer selects numSuccessfulTasks (that field triggered a
+   // backend UNION-ALL aggregation that was crashing the read replica).
+  const workflowId = execs[0]?.workflow?.id || window.selectedWorkflow?.id;
+  const workflowStat = (window.dashboardData?.workflowStats || []).find(s => s.id === workflowId);
+  const totalTasksUsed = workflowStat?.numSucceededTasks || 0;
+  // Note: avgTasksPerRun is approximate — workflowStat covers the org's stats window
+  // (set in template), not necessarily the same window as `execs` here. Acceptable for a
+  // summary card; if precision matters later, switch to a workflow-scoped stats query.
   const avgTasksPerRun =
     totalExecutions > 0
       ? (totalTasksUsed / totalExecutions).toFixed(1)
@@ -15042,7 +16065,10 @@ function renderWorkflowTimeline(execs) {
     if (["FAILED", "failed"].includes(exec.status))
       executionsByDay[dateStr].failed++;
 
-    tasksByDay[dateStr].tasks += exec.tasksUsed || 0;
+    // Per-day tasksUsed is no longer available (numSuccessfulTasks dropped from the bulk query).
+    // The "Task Usage" toggle on this chart has been removed below; this object stays intact
+    // only so any other reader doesn't NPE on it.
+    tasksByDay[dateStr].tasks += 0;
   });
 
   const sortedDates = Object.keys(executionsByDay).sort(
@@ -15058,7 +16084,6 @@ function renderWorkflowTimeline(execs) {
         <h3 class="text-lg font-semibold text-rewst-black">Timeline</h3>
         <select id="workflow-timeline-toggle" class="input-field py-1 px-3 border border-gray-200 rounded-md">
           <option value="executions">Executions</option>
-          <option value="tasks">Task Usage</option>
         </select>
       </div>
       <div id="workflow-timeline-chart"></div>
@@ -15220,24 +16245,23 @@ function renderWorkflowExecutionsTable(execs, allExecutions = []) {
         link: `${baseUrl}/organizations/${orgId}/results/${originatingId}`,
         workflowName: originatingWorkflowName || 'Unknown Workflow'
       } : null,
-      tasks_used: e.tasksUsed || 0,
       trigger_type: e.triggerInfo?.type || "Unknown",
     };
   });
 
   // Conditionally include parent_execution column if any sub-workflows exist
+  // tasks_used column removed: numSuccessfulTasks is no longer in the bulk fetch
   const columns = ["execution_id", "timestamp", "status", "organization"];
   if (hasAnySubWorkflows) {
     columns.push("parent_execution");
   }
-  columns.push("tasks_used", "trigger_type");
+  columns.push("trigger_type");
 
   const headers = {
     execution_id: "Execution",
     timestamp: "Date",
     status: "Status",
     organization: "Organization",
-    tasks_used: "Tasks Used",
     trigger_type: "Trigger Type"
   };
   if (hasAnySubWorkflows) {
@@ -15277,9 +16301,6 @@ function renderWorkflowExecutionsTable(execs, allExecutions = []) {
           hour12: true
         });
         return `${dateStr} ${timeStr}`;
-      },
-      tasks_used: (value) => {
-        return value ? value.toLocaleString() : '0';
       },
       status: (value) => {
         if (["succeeded", "SUCCEEDED", "COMPLETED", "SUCCESS"].includes(value))
@@ -15554,7 +16575,11 @@ function renderFormMetrics(executions) {
 
   const totalExecutions = executions.length;
   const totalTimeSaved = executions.reduce((sum, e) => sum + (e.humanSecondsSaved || 0), 0);
-  const totalTasksUsed = executions.reduce((sum, e) => sum + (e.tasksUsed || 0), 0);
+  // Tasks total comes from the org-wide workflow stats aggregate (already loaded in template).
+  // Forms are workflows in Rewst, so all executions share one workflow id we can look up.
+  const formWorkflowId = executions[0]?.workflow?.id;
+  const formWorkflowStat = (window.dashboardData?.workflowStats || []).find(s => s.id === formWorkflowId);
+  const totalTasksUsed = formWorkflowStat?.numSucceededTasks || 0;
   const avgTasksUsed = totalExecutions ? (totalTasksUsed / totalExecutions).toFixed(1) : 0;
   const monetaryValue = (totalTimeSaved / 3600) * 50; // assuming $50/hr
 
@@ -15915,21 +16940,20 @@ function renderFormSubmissionsTable(executions) {
       timestamp: parseInt(e.createdAt), // Raw timestamp for sorting/filtering
       status: e.status || '—',
       organization: e.organization?.name || e.triggerInfo?.organization?.name || '—',
-      user: e.user?.username || e.triggerInfo?.user?.username || '—',
-      tasks_used: e.tasksUsed ?? 0 // Raw number for sorting
+      user: e.user?.username || e.triggerInfo?.user?.username || '—'
+      // tasks_used column removed: numSuccessfulTasks no longer in bulk fetch
     };
   });
 
   const table = RewstDOM.createTable(rows, {
     title: '<span class="material-icons text-rewst-fandango">table_view</span> Form Submissions',
-    columns: ['view', 'timestamp', 'status', 'organization', 'user', 'tasks_used'],
+    columns: ['view', 'timestamp', 'status', 'organization', 'user'],
     headers: {
       view: 'View',
       timestamp: 'Timestamp',
       status: 'Status',
       organization: 'Organization',
-      user: 'Submitted By',
-      tasks_used: 'Tasks Used'
+      user: 'Submitted By'
     },
     filters: {
       timestamp: {
@@ -15966,10 +16990,6 @@ function renderFormSubmissionsTable(executions) {
           hour12: true
         });
         return `${dateStr} ${timeStr}`;
-      },
-      tasks_used: (value) => {
-        // Display formatted, but sorts on raw number
-        return value === 0 ? '—' : value.toString();
       },
       status: (value) => {
         const v = String(value || '').toUpperCase();
@@ -16690,73 +17710,9 @@ function generateInsights(workflows, executions, forms) {
   // Sort optimization by slowest first
   insights.optimization.sort((a, b) => b.avgRuntime - a.avgRuntime);
 
-  // 🚨 NEEDS ATTENTION: Sudden spike in task usage (per workflow)
-  Object.values(workflowStats).forEach(wf => {
-    const execs = wf.executions;
-    if (execs.length < 10) return; // Need enough data for comparison
-
-    // Sort by date
-    const sorted = [...execs].sort((a, b) => parseInt(a.createdAt) - parseInt(b.createdAt));
-
-    // Split into historical (first 70%) and recent (last 30%)
-    const splitIndex = Math.floor(sorted.length * 0.7);
-    const historical = sorted.slice(0, splitIndex);
-    const recent = sorted.slice(splitIndex);
-
-    if (historical.length < 5 || recent.length < 3) return;
-
-    // Calculate average tasks per execution
-    const historicalAvgTasks = historical.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / historical.length;
-    const recentAvgTasks = recent.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / recent.length;
-
-    // Spike: recent avg is 2x+ historical avg (and historical avg > 0)
-    if (historicalAvgTasks > 0 && recentAvgTasks >= historicalAvgTasks * 2) {
-      const increasePercent = ((recentAvgTasks - historicalAvgTasks) / historicalAvgTasks) * 100;
-      insights.attention.push({
-        type: 'task_usage_spike',
-        workflowId: wf.id,
-        workflowName: wf.name,
-        workflowLink: wf.link,
-        title: `${wf.name} task usage spiked ${increasePercent.toFixed(0)}%`,
-        description: `Recent avg: ${recentAvgTasks.toFixed(1)} tasks/run vs historical: ${historicalAvgTasks.toFixed(1)} tasks/run`,
-        severity: increasePercent >= 200 ? 'critical' : 'high',
-        failureRate: 0,
-        failedCount: 0,
-        increasePercent
-      });
-    }
-  });
-
-  // 🚨 NEEDS ATTENTION: Sudden spike in aggregate task usage
-  if (executions.length >= 20) {
-    const sorted = [...executions].sort((a, b) => parseInt(a.createdAt) - parseInt(b.createdAt));
-    const splitIndex = Math.floor(sorted.length * 0.7);
-    const historical = sorted.slice(0, splitIndex);
-    const recent = sorted.slice(splitIndex);
-
-    const historicalTotalTasks = historical.reduce((sum, e) => sum + (e.tasksUsed || 0), 0);
-    const recentTotalTasks = recent.reduce((sum, e) => sum + (e.tasksUsed || 0), 0);
-
-    // Normalize by execution count to get per-execution average
-    const historicalAvg = historicalTotalTasks / historical.length;
-    const recentAvg = recentTotalTasks / recent.length;
-
-    if (historicalAvg > 0 && recentAvg >= historicalAvg * 1.5) {
-      const increasePercent = ((recentAvg - historicalAvg) / historicalAvg) * 100;
-      insights.attention.push({
-        type: 'aggregate_task_spike',
-        workflowId: null,
-        workflowName: 'All Workflows',
-        workflowLink: null,
-        title: `Overall task usage up ${increasePercent.toFixed(0)}%`,
-        description: `Recent period: ${recentAvg.toFixed(1)} tasks/execution vs historical: ${historicalAvg.toFixed(1)} tasks/execution`,
-        severity: increasePercent >= 100 ? 'high' : 'medium',
-        failureRate: 0,
-        failedCount: 0,
-        increasePercent
-      });
-    }
-  }
+  // Task-usage spike/drop insights removed — they relied on per-execution numSuccessfulTasks
+  // which is no longer fetched in bulk. These can be reintroduced later by querying an
+  // aggregate endpoint scoped to historical vs recent windows.
 
   // 🚨 NEEDS ATTENTION: Sudden drop in executions for consistent workflows
   Object.values(workflowStats).forEach(wf => {
@@ -16802,60 +17758,8 @@ function generateInsights(workflows, executions, forms) {
     }
   });
 
-  // 🚨 NEEDS ATTENTION: Sudden drop in task usage (per workflow) - especially to zero
-  Object.values(workflowStats).forEach(wf => {
-    const execs = wf.executions;
-    if (execs.length < 10) return;
-
-    // Sort by date
-    const sorted = [...execs].sort((a, b) => parseInt(a.createdAt) - parseInt(b.createdAt));
-
-    // Split into historical (first 70%) and recent (last 30%)
-    const splitIndex = Math.floor(sorted.length * 0.7);
-    const historical = sorted.slice(0, splitIndex);
-    const recent = sorted.slice(splitIndex);
-
-    if (historical.length < 5 || recent.length < 3) return;
-
-    // Calculate average tasks per execution
-    const historicalAvgTasks = historical.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / historical.length;
-    const recentAvgTasks = recent.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / recent.length;
-
-    // Only flag if historical avg was meaningful (at least 5 tasks on average)
-    if (historicalAvgTasks < 5) return;
-
-    // Critical: dropped to zero or near-zero (less than 1 task avg)
-    if (recentAvgTasks < 1) {
-      insights.attention.push({
-        type: 'task_usage_zero',
-        workflowId: wf.id,
-        workflowName: wf.name,
-        workflowLink: wf.link,
-        title: `${wf.name} task usage dropped to zero`,
-        description: `Was using ${historicalAvgTasks.toFixed(1)} tasks/run, now ${recentAvgTasks.toFixed(1)} - workflow may be broken`,
-        severity: 'critical',
-        failureRate: 0,
-        failedCount: 0,
-        dropPercent: 100
-      });
-    }
-    // High: dropped by 50%+ (but not to zero)
-    else if (recentAvgTasks < historicalAvgTasks * 0.5) {
-      const dropPercent = ((historicalAvgTasks - recentAvgTasks) / historicalAvgTasks) * 100;
-      insights.attention.push({
-        type: 'task_usage_drop',
-        workflowId: wf.id,
-        workflowName: wf.name,
-        workflowLink: wf.link,
-        title: `${wf.name} task usage dropped ${dropPercent.toFixed(0)}%`,
-        description: `Recent avg: ${recentAvgTasks.toFixed(1)} tasks/run vs historical: ${historicalAvgTasks.toFixed(1)} tasks/run`,
-        severity: dropPercent >= 80 ? 'high' : 'medium',
-        failureRate: 0,
-        failedCount: 0,
-        dropPercent
-      });
-    }
-  });
+  // Task-usage drop insight removed — relied on per-execution numSuccessfulTasks.
+  // Workflow-health detection here can be reintroduced via aggregate stats queries later.
 
   // 💜 LOW ACTIVITY: Workflows with no executions (limit to 5)
   const executedWorkflowIds = new Set(Object.keys(workflowStats));
@@ -17263,7 +18167,7 @@ function renderAdoptionDashboard() {
       formSubmissions: 0,
       timeSaved: 0,
       executions: 0,
-      tasksUsed: 0,
+      // tasksUsed removed: not surfaced on this page anymore
       uniqueForms: new Set(),
       dailyActivity: {}
     };
@@ -17280,7 +18184,6 @@ function renderAdoptionDashboard() {
         formSubmissions: 0,
         timeSaved: 0,
         executions: 0,
-        tasksUsed: 0,
         uniqueForms: new Set(),
         dailyActivity: {}
       };
@@ -17289,7 +18192,6 @@ function renderAdoptionDashboard() {
     orgStats[orgName].formSubmissions++;
     orgStats[orgName].timeSaved += (exec.workflow?.humanSecondsSaved || 0);
     orgStats[orgName].executions++;
-    orgStats[orgName].tasksUsed += (exec.tasksUsed || 0);
 
     // Track unique forms (use getFormId helper for workflow.triggers fallback)
     const formId = getFormId(exec);
@@ -18221,19 +19123,18 @@ function renderAdoptionDashboard() {
     form_submissions: org.formSubmissions,
     time_saved: formatTimeSaved(org.timeSaved),
     time_saved_raw: org.timeSaved, // For sorting
-    executions: org.executions,
-    tasks_used: org.tasksUsed
+    executions: org.executions
+    // tasks_used removed
   }));
 
   const table = RewstDOM.createTable(tableData, {
     title: '<span class="material-icons text-rewst-teal">business</span> Organization Adoption',
-    columns: ['organization', 'form_submissions', 'time_saved', 'executions', 'tasks_used'],
+    columns: ['organization', 'form_submissions', 'time_saved', 'executions'],
     headers: {
       organization: 'Organization',
       form_submissions: 'Form Submissions',
       time_saved: 'Time Saved',
-      executions: 'Total Executions',
-      tasks_used: 'Tasks Used'
+      executions: 'Total Executions'
     },
     searchable: true,
     defaultSort: {
@@ -18242,8 +19143,7 @@ function renderAdoptionDashboard() {
     },
     transforms: {
       form_submissions: (value) => value.toLocaleString(),
-      executions: (value) => value.toLocaleString(),
-      tasks_used: (value) => value.toLocaleString()
+      executions: (value) => value.toLocaleString()
     }
   });
 

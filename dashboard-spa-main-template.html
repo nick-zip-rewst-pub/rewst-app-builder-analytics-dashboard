@@ -671,13 +671,33 @@
 
       // GLOBAL CONFIGURATION
       const DAYS_TO_FETCH = 30;
-      const CACHE_VERSION = '1.6'; // Increment this to invalidate all caches - bumped for auto-exclude feature
+      const CACHE_VERSION = '2.5'; // Safety fixes + busy-workflow failures-first sample (getWorkflowExecutionSample)
       const CACHE_DURATION = 5 * 24 * 60 * 60 * 1000; // 5 days in milliseconds
       const CACHE_KEY_PREFIX = 'rewst_dashboard_cache';
 
-      // Auto-exclude busy workflows config
-      const AUTO_EXCLUDE_THRESHOLD = 5000;  // Workflows with more executions get excluded from main fetch
-      const ALWAYS_EXCLUDE_WORKFLOW_IDS = []; // Manual overrides (add workflow IDs here to always exclude)
+      // Auto-exclude busy workflows config.
+      // Excluded workflows still appear on the dashboard via aggregate stats
+      // (workflowStats / dashboardData.aggregates) — they just don't get individual
+      // executions fetched in the bulk pass, which is what triggers the backend N+1.
+      //
+      // Three layers, each works for every tenant without per-tenant config:
+      //   1. ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS — regex against workflow.name
+      //      (catches Rewst-internal workflow naming conventions across all customers)
+      //   2. AUTO_EXCLUDE_THRESHOLD_CRON — stricter limit for Cron Job triggers
+      //   3. AUTO_EXCLUDE_THRESHOLD — universal hard cap for any workflow type
+      const AUTO_EXCLUDE_THRESHOLD = 500;       // Universal hard cap (any trigger type)
+      const AUTO_EXCLUDE_THRESHOLD_CRON = 100;  // Stricter cap for Cron Job triggers (predictable, high-volume, low per-execution value)
+
+      // Name-pattern blacklist — workflows whose name matches ANY regex pattern here
+      // are always excluded from the bulk fetch, regardless of execution count.
+      // Patterns are matched against `workflow.name`. Empty by default — populate
+      // only if you have a clear product reason to hide specific workflow naming
+      // conventions from per-execution drill-down on every tenant.
+      const ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS = [];
+
+      // ID-based escape hatch — populate ONLY for tenant-specific overrides that the
+      // dynamic rules above can't catch. Leave empty by default.
+      const ALWAYS_EXCLUDE_WORKFLOW_IDS = [];
 
       // ============================================
       // INDEXEDDB CACHE LAYER WITH LOCALSTORAGE FALLBACK
@@ -828,13 +848,23 @@
 
         // localStorage fallback methods
         _lsSave(cacheKey, cacheObject) {
+          const serialized = JSON.stringify(cacheObject);
+          const sizeKB = Math.round(serialized.length / 1024);
+          if (sizeKB > 400) {
+            debugWarn(`⚠️ _lsSave: cache object too large (${sizeKB}KB) — skipping localStorage, using memory only`);
+            return;
+          }
           try {
-            localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
+            localStorage.setItem(cacheKey, serialized);
           } catch (e) {
             if (e.name === 'QuotaExceededError') {
               debugWarn('⚠️ localStorage quota exceeded, clearing old caches...');
               this._lsClearByPrefix(CACHE_KEY_PREFIX);
-              localStorage.setItem(cacheKey, JSON.stringify(cacheObject));
+              try {
+                localStorage.setItem(cacheKey, serialized);
+              } catch (retryErr) {
+                debugWarn(`⚠️ _lsSave: retry also failed (${sizeKB}KB) — giving up on localStorage`);
+              }
             } else { throw e; }
           }
         },
@@ -1767,16 +1797,36 @@ async function initializeAdvancedFilters() {
         let fetchedCount = 0;
         let errorCount = 0;
 
-        const orgPromises = Object.entries(byOrg).map(async ([orgId, formMap]) => {
-          const formIds = Array.from(formMap.keys());
+        // Flatten all (orgId, formId) pairs into a single bounded queue
+        const toFetch = [];
+        for (const [orgId, formMap] of Object.entries(byOrg)) {
+          for (const formId of formMap.keys()) {
+            if (!formNameCache[formId]) toFetch.push({ orgId, formId });
+          }
+        }
 
-          for (const formId of formIds) {
-            if (formNameCache[formId]) continue;
+        const FORM_FETCH_CONCURRENCY = 5;
+        const FORM_FETCH_MAX = 100;
+        const FORM_FETCH_DEADLINE = Date.now() + 25000; // 25s hard cap
+        const capped = toFetch.slice(0, FORM_FETCH_MAX);
+        if (toFetch.length > FORM_FETCH_MAX) {
+          debugWarn(`⚠️ fetchMissingFormNames: capped at ${FORM_FETCH_MAX} (had ${toFetch.length})`);
+        }
 
+        for (let i = 0; i < capped.length; i += FORM_FETCH_CONCURRENCY) {
+          if (Date.now() > FORM_FETCH_DEADLINE) {
+            debugWarn(`⚠️ fetchMissingFormNames: deadline hit at item ${i}/${capped.length}`);
+            break;
+          }
+          const batch = capped.slice(i, i + FORM_FETCH_CONCURRENCY);
+          await Promise.all(batch.map(async ({ orgId, formId }) => {
             try {
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 8000);
               const response = await fetch('/graphql', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
+                signal: controller.signal,
                 body: JSON.stringify({
                   query: `query GetForm($id: ID!, $orgId: ID) {
                     form(where: { id: $id }, orgContextId: $orgId) {
@@ -1787,7 +1837,7 @@ async function initializeAdvancedFilters() {
                   variables: { id: formId, orgId: orgId }
                 })
               });
-
+              clearTimeout(timeoutId);
               const data = await response.json();
               if (data?.data?.form?.name) {
                 formNameCache[formId] = data.data.form.name;
@@ -1797,10 +1847,8 @@ async function initializeAdvancedFilters() {
               errorCount++;
               debugWarn(`Failed to fetch form ${formId}:`, err.message);
             }
-          }
-        });
-
-        await Promise.all(orgPromises);
+          }));
+        }
 
         let updatedCount = 0;
         for (const { exec, formId } of missingFormNames) {
@@ -2383,29 +2431,59 @@ function stopMorphAnimation() {
           const workflowStats = await rewst.getWorkflowStatsByOrg(rewst.orgId, startDate, endDate);
           debugLog(`📊 Workflow stats: ${workflowStats.length} workflows analyzed`);
 
+          // Build a quick lookup: workflowId -> set of trigger type names.
+          // workflows array (from rewst.getAllWorkflows) has triggers[].triggerType.name.
+          const workflowTriggerTypes = new Map(
+            (workflows || []).map(w => [
+              w.id,
+              new Set((w.triggers || []).map(t => t?.triggerType?.name).filter(Boolean))
+            ])
+          );
+          const isCronWorkflow = (workflowId) =>
+            workflowTriggerTypes.get(workflowId)?.has('Cron Job') === true;
+
+          // Returns the reason a workflow stat row should be auto-excluded, or null if not.
+          // Order matters: name-pattern is the most specific signal so we check it first.
+          const exclusionReason = (statRow) => {
+            const name = statRow?.name || '';
+            for (const re of ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS) {
+              if (re.test(name)) return `name pattern ${re}`;
+            }
+            if (statRow.totalExecutions > AUTO_EXCLUDE_THRESHOLD) {
+              return `>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions`;
+            }
+            if (isCronWorkflow(statRow.id) && statRow.totalExecutions > AUTO_EXCLUDE_THRESHOLD_CRON) {
+              return `cron >${AUTO_EXCLUDE_THRESHOLD_CRON.toLocaleString()} executions`;
+            }
+            return null;
+          };
+          const shouldAutoExclude = (statRow) => exclusionReason(statRow) !== null;
+
           // Show top 10 workflows by execution count for visibility
           const sortedByExecs = [...workflowStats].sort((a, b) => b.totalExecutions - a.totalExecutions);
           debugLog(`📊 Top 10 workflows by execution count:`);
           sortedByExecs.slice(0, 10).forEach((w, i) => {
-            const marker = w.totalExecutions > AUTO_EXCLUDE_THRESHOLD ? '🚫' : '✅';
-            debugLog(`   ${i + 1}. ${marker} ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+            const reason = exclusionReason(w);
+            const marker = reason ? '🚫' : '✅';
+            const cronTag = isCronWorkflow(w.id) ? ' [CRON]' : '';
+            debugLog(`   ${i + 1}. ${marker} ${w.name}${cronTag}: ${w.totalExecutions.toLocaleString()} executions${reason ? ` — ${reason}` : ''}`);
           });
 
-          // Identify busy workflows that exceed threshold
-          const busyWorkflows = workflowStats.filter(w => w.totalExecutions > AUTO_EXCLUDE_THRESHOLD);
+          // Identify busy workflows that match ANY exclusion rule (name pattern, universal, or cron).
+          const busyWorkflows = workflowStats.filter(shouldAutoExclude);
           const excludeWorkflowIds = [
             ...busyWorkflows.map(w => w.id),
             ...ALWAYS_EXCLUDE_WORKFLOW_IDS
           ];
 
-          debugLog(`📊 Threshold: ${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions`);
-          if (excludeWorkflowIds.length > 0) {
-            debugLog(`📋 Busy workflows (>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} executions):`);
+          debugLog(`📊 Exclusion rules: name patterns=${ALWAYS_EXCLUDE_WORKFLOW_NAME_PATTERNS.length} | universal>${AUTO_EXCLUDE_THRESHOLD.toLocaleString()} | cron>${AUTO_EXCLUDE_THRESHOLD_CRON.toLocaleString()}`);
+          if (busyWorkflows.length > 0) {
+            debugLog(`📋 Auto-excluded ${busyWorkflows.length} workflow(s):`);
             busyWorkflows.forEach(w => {
-              debugLog(`   • ${w.name}: ${w.totalExecutions.toLocaleString()} executions`);
+              debugLog(`   • ${w.name}: ${w.totalExecutions.toLocaleString()} executions — ${exclusionReason(w)}`);
             });
           } else {
-            debugLog(`✅ No workflows exceed threshold`);
+            debugLog(`✅ No workflows matched any exclusion rule`);
           }
 
           // Workflow scope: 'parents' | 'subs' | 'both'
@@ -2414,16 +2492,33 @@ function stopMorphAnimation() {
           RewstApp.WORKFLOW_SCOPE = 'parents';
 
           // Phase 2: PARALLEL FETCH - Forms + everything else at the same time
+          //
+          // Detect form workflows by trigger type. Previously this used
+          // `.toLowerCase().includes('form')` which falsely matched "App Platform"
+          // (the lowercased substring "plat-form" contains "form"). That caused every
+          // App Platform workflow to flow into the per-workflow form fetch path,
+          // *bypassing the auto-exclude entirely*. We now match strictly on either
+          //   - exact trigger type name "Form Submission", or
+          //   - presence of a non-null formId (the most reliable signal).
+          //
+          // Then we subtract any auto-excluded workflow IDs so the form path doesn't
+          // re-fetch a workflow the rest path already skipped.
+          const excludeIdSet = new Set(excludeWorkflowIds);
           const formWorkflowIds = workflows
             .filter(w => w.triggers?.some(t =>
-              t.triggerType?.name?.toLowerCase().includes('form')
+              t?.triggerType?.name === 'Form Submission' || t?.formId != null
             ))
-            .map(w => w.id);
+            .map(w => w.id)
+            .filter(id => !excludeIdSet.has(id));
 
           updateLoadingProgress(15, 'Fetching executions...', 'fetch');
           debugLog(`🚀 Phase 2: Parallel fetch - ${formWorkflowIds.length} forms + ${workflows.length - formWorkflowIds.length} other workflows`);
 
-          // Fire both requests in parallel
+          // Fire all requests in parallel
+          // - formPromise / restPromise: existing per-execution fetch (still needed for trigger info, user data, drill-downs)
+          // - aggregatesPromise: NEW — sub-second aggregate endpoints for totals/trends
+          //   Replaces what we used to compute by summing exec.numSuccessfulTasks across thousands of rows.
+          //   Backend resolves these via dedicated aggregate queries (no UNION-ALL fan-out into task_logs).
           const formPromise = formWorkflowIds.length > 0
             ? rewst.getRecentExecutions(true, days, null, false, orgIds, {
                 timeout: 45000,
@@ -2432,29 +2527,89 @@ function stopMorphAnimation() {
               })
             : Promise.resolve([]);
 
-          const restPromise = rewst.getRecentExecutions(true, days, null, false, orgIds, {
-            timeout: 60000,
-            excludeWorkflowIds: formWorkflowIds.length > 0 ? formWorkflowIds : undefined,
-            onProgress: ({ phase, completed, total, status }) => {
-              if (phase === 'batches' && total > 0) {
-                // Map batch progress to 15-85% of the bar
-                const batchPercent = 15 + Math.round((completed / total) * 70);
-                updateLoadingProgress(batchPercent, `Fetching: ${completed}/${total} batches...`);
-              } else if (phase === 'enriching') {
-                updateLoadingProgress(85, 'Enriching data...', 'enrich');
-              } else if (phase === 'complete') {
-                updateLoadingProgress(100, 'Complete!');
-              }
-            }
+          // INVERTED FILTER STRATEGY (2026-05-06)
+          // ---------------------------------------------------------------
+          // We used to pass `excludeWorkflowIds` (a `_nin` filter) here. Live testing
+          // showed `_nin` is dramatically slower than `_in` on this backend because
+          // the workflow_executions(workflow_id) index can satisfy `_in` via index
+          // range scans but cannot satisfy `_nin` (forces a full scan). On a 30-day
+          // window, `_nin` with 32 IDs hit the 50s backend query_timeout while `_in`
+          // with 85 IDs returned 1069 rows in 3.2s with the same field selection.
+          // See local/research/2026-05-06-in-vs-nin-finding.md for full test data.
+          //
+          // Build the *include* list explicitly: every workflow in workflowStats that
+          // (a) had any executions in the window, (b) the form path isn't already
+          // handling, and (c) wasn't auto-excluded.
+          const formWorkflowIdSet = new Set(formWorkflowIds);
+          const excludeWorkflowIdSet = new Set(excludeWorkflowIds);
+          const restIncludeIds = (workflowStats || [])
+            .filter(w => w.totalExecutions > 0)
+            .map(w => w.id)
+            .filter(id => !formWorkflowIdSet.has(id))
+            .filter(id => !excludeWorkflowIdSet.has(id));
+
+          debugLog(`🎯 Rest-path include list: ${restIncludeIds.length} workflow(s) with activity (excluded ${excludeWorkflowIds.length}, form-handled ${formWorkflowIds.length})`);
+
+          const restPromise = restIncludeIds.length > 0
+            ? rewst.getRecentExecutions(true, days, null, false, orgIds, {
+                timeout: 60000,
+                includeOnlyWorkflowIds: restIncludeIds,
+                onProgress: ({ phase, completed, total, status }) => {
+                  if (phase === 'batches' && total > 0) {
+                    const batchPercent = 15 + Math.round((completed / total) * 70);
+                    updateLoadingProgress(batchPercent, `Fetching: ${completed}/${total} batches...`);
+                  } else if (phase === 'enriching') {
+                    updateLoadingProgress(85, 'Enriching data...', 'enrich');
+                  } else if (phase === 'complete') {
+                    updateLoadingProgress(100, 'Complete!');
+                  }
+                }
+              })
+            : Promise.resolve([]);
+
+          // Aggregates fire in parallel — sub-second, no per-execution scan
+          const aggregatesPromise = rewst.getDashboardAggregates(days, {
+            includeSubWorkflows: false,
+            rollUpTimeSaved: true
+          }).catch(err => {
+            debugLog(`⚠️ Aggregate fetch failed (non-blocking): ${err.message}`);
+            return { stats: null, dailyTasks: [], dailyTimeSaved: [], timeSavedByWorkflow: [], timeSavedBySubOrg: [] };
           });
 
-          // Wait for both to complete
-          const [formExecutions, allExecutions] = await Promise.all([formPromise, restPromise]);
+          // Busy-workflow samples: failures-first lightweight fetch for auto-excluded workflows.
+          // Two parallel queries per workflow (failures + successes), capped at 5 concurrent workflows.
+          // Each returns at most 50 failures + 100 successes — just id/status/createdAt/humanSecondsSaved.
+          const busySamplesPromise = (async () => {
+            const toSample = busyWorkflows.slice(0, 15);
+            if (toSample.length === 0) return [];
+            debugLog(`🔍 Sampling ${toSample.length} busy workflow(s) (failures-first)...`);
+            const sampleOrgId = rewst.orgId;
+            const results = [];
+            const CONCURRENCY = 5;
+            for (let i = 0; i < toSample.length; i += CONCURRENCY) {
+              const batch = toSample.slice(i, i + CONCURRENCY);
+              const batchResults = await Promise.all(
+                batch.map(w => rewst.getWorkflowExecutionSample(w.id, sampleOrgId, days))
+              );
+              for (const sample of batchResults) results.push(...sample);
+            }
+            debugLog(`🔍 Busy workflow samples: ${results.length} total executions`);
+            return results;
+          })().catch(err => {
+            debugWarn(`⚠️ Busy workflow sampling failed (non-blocking): ${err.message}`);
+            return [];
+          });
 
-          debugLog(`✅ Parallel fetch complete: ${formExecutions.length} forms, ${allExecutions.length} others`);
+          // Wait for all four to complete
+          const [formExecutions, allExecutions, aggregates, busySamples] = await Promise.all([formPromise, restPromise, aggregatesPromise, busySamplesPromise]);
+
+          debugLog(`✅ Parallel fetch complete: ${formExecutions.length} forms, ${allExecutions.length} others, ${busySamples.length} busy-workflow samples`);
+          if (aggregates && aggregates.stats) {
+            debugLog(`📊 Aggregates: ${aggregates.stats.succeeded} succeeded, ${aggregates.stats.failed} failed, ${aggregates.dailyTasks.length} days of task data`);
+          }
 
           // Merge: dedupe by execution ID (safety check in case filtering fails)
-          const mergedExecutions = [...formExecutions, ...allExecutions];
+          const mergedExecutions = [...formExecutions, ...allExecutions, ...busySamples];
           let executions = _.uniqBy(mergedExecutions, 'id');
 
           const duplicateCount = mergedExecutions.length - executions.length;
@@ -2474,7 +2629,7 @@ function stopMorphAnimation() {
             isStatsOnly: true  // Flag to indicate this is aggregate-only data
           }));
 
-          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs, excludedWorkflows, workflowStats };
+          const freshData = { workflows, executions, forms, integrationConfigs, orgIds, days, managedOrgs, excludedWorkflows, workflowStats, aggregates };
 
           // Store globally
           window.dashboardData = freshData;

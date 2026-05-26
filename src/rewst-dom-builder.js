@@ -1405,17 +1405,61 @@ const RewstDOM = {
    * @private
    */
   _markdownToHtml(markdown) {
-    return markdown
+    if (!markdown) return '';
+
+    // Process admonition blocks first: :::tip, :::warning, :::info, :::note, :::danger
+    // Format: :::type\ncontent\n:::
+    let result = markdown;
+
+    // Admonition blocks — convert to styled callout divs
+    const admonitionStyles = {
+      tip: 'background:#e0f2f1;border-left:4px solid #009490;color:#00695c',
+      warning: 'background:#fff3e0;border-left:4px solid #f9a100;color:#e65100',
+      danger: 'background:#ffebee;border-left:4px solid #f75b58;color:#c62828',
+      info: 'background:#e0f2f1;border-left:4px solid #009490;color:#00695c',
+      note: 'background:#f3e5f5;border-left:4px solid #504384;color:#4a148c'
+    };
+
+    // Use RegExp constructor to avoid [\s\S] in source (breaks when embedded in HTML <script> tags)
+    var admonitionRe = new RegExp(':::(tip|warning|danger|info|note)\\s*\\r?\\n([\\s\\S]*?):::', 'gi');
+    result = result.replace(admonitionRe, function(match, type, content) {
+      var style = admonitionStyles[type.toLowerCase()] || admonitionStyles.info;
+      var cleanContent = content.trim();
+      return '<div style="' + style + ';padding:12px 16px;border-radius:6px;margin:12px 0;font-size:0.9rem;">' + cleanContent + '<' + '/div>';
+    });
+
+    // Remove any remaining ::: markers
+    result = result.replace(/^:::\w*\s*$/gm, '');
+
+    result = result
+      // Horizontal rules: ---, ***, ___  (with optional leading/trailing whitespace or dashes)
+      .replace(/^\s*[-*_]{3,}\s*$/gm, '<hr style="border:none;border-top:1px solid #e2e8f0;margin:16px 0;">')
       // Headers
       .replace(/^### (.*$)/gim, '<h3 class="text-lg font-semibold mb-2">$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="text-xl font-bold mb-3">$1</h2>')
       .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mb-4">$1</h1>')
       // Bold
       .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      // Italic
-      .replace(/\*(.*?)\*/g, '<em>$1</em>')
-      // Line breaks
+      .replace(/__(.*?)__/g, '<strong>$1</strong>')
+      // Italic (after bold to avoid conflict)
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>')
+      // Backslash line break (\ at end of line or standalone \)
+      .replace(/\\\s*$/gm, '<br>')
+      .replace(/^\\\s*$/gm, '<br>')
+      // Standalone backslash on its own line
+      .replace(/^\\$/gm, '')
+      // Line breaks (double newline = paragraph, single = br)
+      .replace(/\r\n/g, '\n')
+      .replace(/\n\n/g, '<' + '/p><p style="margin:8px 0;">')
       .replace(/\n/g, '<br>');
+
+    // Wrap in paragraph if not already wrapped
+    if (!result.startsWith('<')) {
+      result = '<p style="margin:8px 0;">' + result + '</p>';
+    }
+
+    return result;
   },
 
   /**
@@ -1787,12 +1831,22 @@ const RewstDOM = {
       throw new Error('RewstApp instance not found. Please ensure RewstApp is loaded or pass it via options.rewstApp');
     }
 
-    // Fetch form details
-    const formData = await rewstApp._getForm(formId);
+    // Fetch form details — use evaluatedForm if trigger available for org-specific overrides
+    const triggerId = options.triggerId || null;
+    let formData;
+    if (triggerId && rewstApp.getEvaluatedForm) {
+      formData = await rewstApp.getEvaluatedForm(formId, triggerId);
+    }
+    if (!formData) {
+      formData = await rewstApp._getForm(formId);
+    }
 
     if (!formData) {
       throw new Error(`Form ${formId} not found`);
     }
+
+    // Auto-detect triggerId from form if not provided (needed for enumSourceWorkflow)
+    const resolvedTriggerId = triggerId || formData.triggers?.[0]?.id || null;
 
     // Sort fields by index
     const sortedFields = [...formData.fields].sort((a, b) => {
@@ -1817,7 +1871,8 @@ const RewstDOM = {
     if (formData.description) {
       const desc = document.createElement('p');
       desc.className = 'text-gray-600 mb-6';
-      desc.textContent = formData.description;
+      // Fix literal \n in description text
+      desc.innerHTML = formData.description.replace(/\\n/g, '<br>').replace(/\n/g, '<br>');
       form.appendChild(desc);
     }
 
@@ -1865,6 +1920,92 @@ const RewstDOM = {
     // Map to store field wrappers for show/hide
     const fieldWrappers = new Map();
 
+    // Build field ID → field name lookup (for inputFromFields resolution)
+    const fieldIdToName = new Map();
+    const fieldNameToId = new Map();
+    sortedFields.forEach(f => {
+      if (f.schema?.name) {
+        fieldIdToName.set(f.id, f.schema.name);
+        fieldNameToId.set(f.schema.name, f.id);
+      }
+    });
+
+    // Build dependency graph: when field X changes, which fields need their options reloaded?
+    // inputFromFields maps: { fieldName: { fieldId, isActive, isRequired } }
+    // We invert this to: parentFieldName → [childFieldIds that depend on it]
+    const cascadeDependents = new Map(); // parentFieldName → Set of child field IDs
+    const fieldOptionLoaders = new Map(); // fieldId → loadOptions function (registered during field creation)
+
+    sortedFields.forEach(f => {
+      const wfConfig = f.schema?.enumSourceWorkflow;
+      if (wfConfig?.inputFromFields) {
+        Object.entries(wfConfig.inputFromFields).forEach(([inputKey, config]) => {
+          if (!config.isActive) return;
+          // config.fieldId is the ID of the parent field this depends on
+          const parentName = fieldIdToName.get(config.fieldId);
+          if (parentName) {
+            if (!cascadeDependents.has(parentName)) {
+              cascadeDependents.set(parentName, new Set());
+            }
+            cascadeDependents.get(parentName).add(f.id);
+          }
+        });
+      }
+    });
+
+    // Cascade: when a field value changes, reload dependent field options
+    const triggerCascade = (changedFieldName) => {
+      const dependents = cascadeDependents.get(changedFieldName);
+      if (!dependents || dependents.size === 0) return;
+      dependents.forEach(childFieldId => {
+        const loader = fieldOptionLoaders.get(childFieldId);
+        if (loader) {
+          this._log(`Cascade: ${changedFieldName} changed → reloading options for field ${childFieldId}`);
+          loader();
+        }
+      });
+    };
+
+    // Helper: build workflow input for enumSourceWorkflow, merging static input + inputFromFields
+    const buildWorkflowInput = (wfConfig) => {
+      const input = {};
+
+      // Start with static inputs (may contain Jinja templates — passed as-is, server evaluates them)
+      if (wfConfig.input) {
+        Object.assign(input, wfConfig.input);
+      }
+
+      // Overlay with current form field values for inputFromFields
+      if (wfConfig.inputFromFields) {
+        Object.entries(wfConfig.inputFromFields).forEach(([inputKey, config]) => {
+          if (!config.isActive) return;
+          const parentName = fieldIdToName.get(config.fieldId);
+          if (parentName && formValues[parentName] !== undefined && formValues[parentName] !== null) {
+            input[inputKey] = formValues[parentName];
+          }
+        });
+      }
+
+      return input;
+    };
+
+    // Helper: check if all required inputFromFields have values (skip loading if not)
+    const hasRequiredInputs = (wfConfig) => {
+      if (!wfConfig.inputFromFields) return true;
+      for (const [inputKey, config] of Object.entries(wfConfig.inputFromFields)) {
+        if (!config.isActive) continue;
+        if (!config.isRequired) continue;
+        const parentName = fieldIdToName.get(config.fieldId);
+        if (!parentName) return false;
+        const val = formValues[parentName];
+        if (val === undefined || val === null || val === '') return false;
+      }
+      return true;
+    };
+
+    // Helper: check if a value contains server-side Jinja templates (can't evaluate client-side)
+    const _isJinjaTemplate = (v) => typeof v === 'string' && (v.includes('{' + '{') || v.includes('{' + '%'));
+
     // Function to update field visibility based on current form values
     const updateFieldVisibility = () => {
       sortedFields.forEach(field => {
@@ -1873,10 +2014,30 @@ const RewstDOM = {
         const wrapper = fieldWrappers.get(field.id);
         if (!wrapper) return;
 
-        const evaluation = rewstApp.evaluateFieldConditions(field, formValues);
+        // Start with schema.hidden as the default visibility
+        let visible = field.schema.hidden !== true;
 
-        // Show or hide the field
-        if (evaluation.visible) {
+        // Check conditions
+        if (field.conditions && field.conditions.length > 0) {
+          const evaluation = rewstApp.evaluateFieldConditions(field, formValues);
+
+          // If condition has Jinja requiredValue, we can't evaluate client-side
+          // For 'show' conditions with Jinja: default to hidden (server would evaluate)
+          // For 'hide' conditions with Jinja: default to visible
+          const hasJinjaShow = field.conditions.some(c => c.action === 'show' && _isJinjaTemplate(c.requiredValue));
+          const hasJinjaHide = field.conditions.some(c => c.action === 'hide' && _isJinjaTemplate(c.requiredValue));
+
+          if (hasJinjaShow || hasJinjaHide) {
+            // Can't evaluate Jinja client-side — use schema.hidden as truth
+            visible = field.schema.hidden !== true;
+          } else {
+            // Normal client-side evaluation
+            visible = evaluation.visible;
+          }
+        }
+
+        // Apply visibility
+        if (visible) {
           wrapper.style.display = '';
           wrapper.classList.remove('hidden');
         } else {
@@ -1887,10 +2048,9 @@ const RewstDOM = {
         // Update required status - CRITICAL: Remove required from hidden fields
         const input = wrapper.querySelector(`[name="${field.id}"]`);
         if (input && field.type !== 'TEXT') {
-          if (evaluation.visible) {
-            input.required = evaluation.required;
+          if (visible) {
+            input.required = field.schema?.required || false;
           } else {
-            // Remove required from hidden fields to prevent validation errors
             input.required = false;
           }
         }
@@ -1908,9 +2068,24 @@ const RewstDOM = {
 
       // Handle TEXT type (markdown/static text)
       if (field.type === 'TEXT' && schema.static) {
+        const rawText = schema.text || '';
+
+        // Skip if hidden by schema
+        if (schema.hidden === true) continue;
+
+        // Skip TEXT fields that contain Jinja templates (server-side only)
+        if (_isJinjaTemplate(rawText)) continue;
+
+        // Skip if field has Jinja show conditions (can't evaluate client-side, default to hidden)
+        if (field.conditions && field.conditions.some(c => c.action === 'show' && _isJinjaTemplate(c.requiredValue))) {
+          continue;
+        }
+
         const textDiv = document.createElement('div');
         textDiv.className = 'text-gray-700 mb-4';
-        textDiv.innerHTML = this._markdownToHtml(schema.text || '');
+        // Fix literal \n in text before markdown conversion
+        const cleanedText = rawText.replace(/\\n/g, '\n');
+        textDiv.innerHTML = this._markdownToHtml(cleanedText);
         form.appendChild(textDiv);
         continue;
       }
@@ -1956,6 +2131,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -1969,6 +2145,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -1983,6 +2160,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = parseFloat(e.target.value) || 0;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -1996,6 +2174,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -2023,6 +2202,7 @@ const RewstDOM = {
                 if (e.target.checked) {
                   formValues[schema.name] = e.target.value;
                   updateFieldVisibility();
+                  triggerCascade(schema.name);
                 }
               });
 
@@ -2055,6 +2235,7 @@ const RewstDOM = {
           selectInput.addEventListener('change', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
 
           // Check for workflow-based options
@@ -2069,23 +2250,50 @@ const RewstDOM = {
             refreshBtn.title = 'Refresh options';
 
             const loadOptions = async () => {
-              refreshBtn.classList.add('animate-spin');
-              try {
-                const workflowConfig = schema.enumSourceWorkflow;
+              const workflowConfig = schema.enumSourceWorkflow;
 
-                // Try to get last execution first
+              // Skip if required parent fields don't have values yet
+              if (!hasRequiredInputs(workflowConfig)) {
+                this._log(`Skipping options load for ${schema.name} — waiting for required parent fields`);
+                return;
+              }
+
+              refreshBtn.classList.add('animate-spin');
+              // Show loading state in dropdown
+              selectInput.innerHTML = '';
+              const loadingOpt = document.createElement('option');
+              loadingOpt.value = '';
+              loadingOpt.textContent = 'Loading...';
+              selectInput.appendChild(loadingOpt);
+
+              try {
+                // Build input from static config + current form field values
+                const workflowInput = buildWorkflowInput(workflowConfig);
+
+                // Try trigger-based execution first (most forms use triggers), then fall back
                 let result;
-                try {
-                  result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
-                } catch (error) {
-                  this._log('No previous execution found, running workflow...');
-                  result = await rewstApp.runWorkflowSmart(
-                    workflowConfig.id,
-                    workflowConfig.input || {}
-                  );
+                // Only treat as "has dynamic inputs" if there are ACTIVE entries with real fieldIds
+                const hasInputFromFields = workflowConfig.inputFromFields &&
+                  Object.values(workflowConfig.inputFromFields).some(c => c.isActive && c.fieldId);
+
+                if (hasInputFromFields) {
+                  // Has dynamic inputs from form fields — must run workflow fresh with current values
+                  this._log(`Running workflow for ${schema.name} with dynamic inputs:`, workflowInput);
+                  result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                } else {
+                  // No dynamic inputs — try last execution first (faster), fall back to running
+                  if (!workflowConfig.id) {
+                    throw new Error(`enumSourceWorkflow has no workflow ID for field ${schema.name}`);
+                  }
+                  try {
+                    result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
+                  } catch (error) {
+                    this._log('No previous execution found, running workflow...');
+                    result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                  }
                 }
 
-                // Clear existing options except placeholder
+                // Clear and rebuild options
                 selectInput.innerHTML = '';
                 selectInput.appendChild(placeholderOption.cloneNode(true));
 
@@ -2109,14 +2317,24 @@ const RewstDOM = {
                     option.textContent = item[workflowConfig.labelKey] || item.label || item;
                     selectInput.appendChild(option);
                   });
+                  this._log(`Loaded ${optionsData.length} options for ${schema.name}`);
                 }
               } catch (error) {
                 console.error('Failed to load dropdown options:', error);
-                this.showError(`Failed to load options for ${label}`);
+                selectInput.innerHTML = '';
+                selectInput.appendChild(placeholderOption.cloneNode(true));
+                const errorOpt = document.createElement('option');
+                errorOpt.value = '';
+                errorOpt.textContent = '(Failed to load options)';
+                errorOpt.disabled = true;
+                selectInput.appendChild(errorOpt);
               } finally {
                 refreshBtn.classList.remove('animate-spin');
               }
             };
+
+            // Register loader for cascade system
+            fieldOptionLoaders.set(field.id, loadOptions);
 
             refreshBtn.onclick = loadOptions;
 
@@ -2124,8 +2342,10 @@ const RewstDOM = {
             controlWrapper.appendChild(refreshBtn);
             dropdownWrapper.appendChild(controlWrapper);
 
-            // Load options on form creation using last execution
-            loadOptions();
+            // Load options on form creation (only if no required parent inputs, or if autoPopulate is set)
+            if (!schema.enumSourceWorkflow.inputFromFields || hasRequiredInputs(schema.enumSourceWorkflow) || schema.autoPopulate) {
+              loadOptions();
+            }
           } else if (schema.enum && Array.isArray(schema.enum)) {
             // Static options
             schema.enum.forEach(opt => {
@@ -2273,6 +2493,7 @@ const RewstDOM = {
                 renderTags();
                 renderDropdown();
                 updateFieldVisibility();
+                triggerCascade(schema.name);
               };
 
               dropdownMenu.appendChild(optionEl);
@@ -2310,20 +2531,40 @@ const RewstDOM = {
             refreshBtn.title = 'Refresh options';
 
             const loadOptions = async () => {
+              const workflowConfig = schema.enumSourceWorkflow;
+
+              // Skip if required parent fields don't have values yet
+              if (!hasRequiredInputs(workflowConfig)) {
+                this._log(`Skipping multiselect options load for ${schema.name} — waiting for required parent fields`);
+                return;
+              }
+
               refreshBtn.classList.add('animate-spin');
               try {
-                const workflowConfig = schema.enumSourceWorkflow;
+                // Build input from static config + current form field values
+                const workflowInput = buildWorkflowInput(workflowConfig);
 
-                // Try to get last execution first
+                // Cache-first: try last execution (instant) then fall back to fresh run.
+                // Only run fresh when parent fields actually have values (cascade triggered
+                // with real input) — avoids slow cold-start on every form open.
                 let result;
-                try {
-                  result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
-                } catch (error) {
-                  this._log('No previous execution found, running workflow...');
-                  result = await rewstApp.runWorkflowSmart(
-                    workflowConfig.id,
-                    workflowConfig.input || {}
-                  );
+                const hasInputFromFields = workflowConfig.inputFromFields &&
+                  Object.values(workflowConfig.inputFromFields).some(c => c.isActive && c.fieldId);
+                const hasMeaningfulInput = hasInputFromFields &&
+                  Object.values(workflowInput).some(v => v !== null && v !== undefined && v !== '' && v !== false);
+
+                if (hasMeaningfulInput) {
+                  // Parent fields have values → run fresh for accurate filtered results
+                  this._log(`Running workflow for multiselect ${schema.name} with inputs:`, workflowInput);
+                  result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                } else {
+                  // No meaningful parent values (initial load or empty deps) → use cache
+                  try {
+                    result = await rewstApp.getLastWorkflowExecution(workflowConfig.id);
+                  } catch (error) {
+                    this._log('No previous execution found, running workflow...');
+                    result = await rewstApp.runWorkflowSmart(workflowConfig.id, workflowInput);
+                  }
                 }
 
                 // Get the data from output
@@ -2347,17 +2588,23 @@ const RewstDOM = {
                       label: item[workflowConfig.labelKey] || item.label || item
                     });
                   });
+                  this._log(`Loaded ${availableOptions.length} multiselect options for ${schema.name}`);
                 }
 
                 renderTags();
                 renderDropdown();
               } catch (error) {
                 console.error('Failed to load multiselect options:', error);
-                this.showError(`Failed to load options for ${label}`);
+                availableOptions = [{ value: '', label: '(Failed to load options)' }];
+                renderTags();
+                renderDropdown();
               } finally {
                 refreshBtn.classList.remove('animate-spin');
               }
             };
+
+            // Register loader for cascade system
+            fieldOptionLoaders.set(field.id, loadOptions);
 
             refreshBtn.onclick = loadOptions;
 
@@ -2365,8 +2612,10 @@ const RewstDOM = {
             containerWithRefresh.appendChild(multiselectWrapper);
             containerWithRefresh.appendChild(refreshBtn);
 
-            // Load options on form creation using last execution
-            loadOptions();
+            // Load options on form creation (only if no required parent inputs pending)
+            if (!schema.enumSourceWorkflow.inputFromFields || hasRequiredInputs(schema.enumSourceWorkflow) || schema.autoPopulate) {
+              loadOptions();
+            }
 
             input = containerWithRefresh;
           } else if (schema.items && schema.items.enum) {
@@ -2410,6 +2659,7 @@ const RewstDOM = {
           input.addEventListener('change', (e) => {
             formValues[schema.name] = e.target.checked;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
 
           const checkboxLabel = document.createElement('label');
@@ -2437,6 +2687,7 @@ const RewstDOM = {
           input.addEventListener('change', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
 
@@ -2449,6 +2700,7 @@ const RewstDOM = {
           input.addEventListener('input', (e) => {
             formValues[schema.name] = e.target.value;
             updateFieldVisibility();
+            triggerCascade(schema.name);
           });
           break;
       }
@@ -3162,7 +3414,8 @@ const RewstDOM = {
       searchFn = null,
       showClearButton = true,
       noResultsText = 'No results found',
-      maxResults = 10
+      maxResults = 10,
+      portalMode = false
     } = options;
 
     // State
@@ -3218,8 +3471,15 @@ const RewstDOM = {
 
     // Create dropdown
     const dropdown = document.createElement('div');
-    dropdown.className = 'hidden absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
-    container.appendChild(dropdown);
+    if (portalMode) {
+      // Portal mode: append to body with fixed positioning to escape overflow:hidden parents
+      dropdown.className = 'hidden bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
+      dropdown.style.cssText = 'position:fixed;z-index:99999;';
+      document.body.appendChild(dropdown);
+    } else {
+      dropdown.className = 'hidden absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-md shadow-lg max-h-60 overflow-auto';
+      container.appendChild(dropdown);
+    }
 
     // Default search function
     const defaultSearchFn = (item, searchTerm) => {
@@ -3349,6 +3609,15 @@ const RewstDOM = {
       input.focus();
     };
 
+    // Position portal dropdown below the input
+    const positionPortalDropdown = () => {
+      if (!portalMode) return;
+      const rect = inputWrapper.getBoundingClientRect();
+      dropdown.style.top = (rect.bottom + 4) + 'px';
+      dropdown.style.left = rect.left + 'px';
+      dropdown.style.width = rect.width + 'px';
+    };
+
     // Show dropdown with all or filtered items
     const showDropdown = () => {
       const searchTerm = input.value.trim();
@@ -3362,6 +3631,7 @@ const RewstDOM = {
       }
 
       renderDropdown();
+      positionPortalDropdown();
       dropdown.classList.remove('hidden');
       isDropdownOpen = true;
     };
@@ -3383,6 +3653,7 @@ const RewstDOM = {
       }
 
       renderDropdown();
+      positionPortalDropdown();
       dropdown.classList.remove('hidden');
       isDropdownOpen = true;
     });
@@ -3439,10 +3710,21 @@ const RewstDOM = {
 
     // Click outside to close
     document.addEventListener('click', (e) => {
-      if (!container.contains(e.target)) {
+      if (!container.contains(e.target) && !dropdown.contains(e.target)) {
         hideDropdown();
       }
     });
+
+    // Clean up portal dropdown when container is removed from DOM
+    if (portalMode) {
+      const observer = new MutationObserver(() => {
+        if (!document.body.contains(container)) {
+          dropdown.remove();
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
 
     // Public API
     container.getValue = () => selectedItem ? selectedItem[valueKey] : null;
@@ -3454,6 +3736,12 @@ const RewstDOM = {
       }
     };
     container.clear = () => clearSelection();
+    container.updateItems = (newItems) => {
+      items = newItems;
+      if (isDropdownOpen) {
+        showDropdown();
+      }
+    };
 
     return container;
   },

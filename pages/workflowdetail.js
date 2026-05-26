@@ -183,11 +183,16 @@ function renderWorkflowMetrics(execs) {
   );
   const hoursSaved = totalSecondsSaved / 3600;
   const monetaryValue = (hoursSaved * 50).toFixed(0);
-  const totalTasksUsed = execs.reduce(
-    (sum, e) => sum + (e.tasksUsed || 0),
-    0
-  );
-
+  // Task totals come from the org-wide workflow stats aggregate (already loaded in template
+   // via getWorkflowStatsByOrg). We can no longer sum exec.tasksUsed because the bulk
+   // workflowExecutions query no longer selects numSuccessfulTasks (that field triggered a
+   // backend UNION-ALL aggregation that was crashing the read replica).
+  const workflowId = execs[0]?.workflow?.id || window.selectedWorkflow?.id;
+  const workflowStat = (window.dashboardData?.workflowStats || []).find(s => s.id === workflowId);
+  const totalTasksUsed = workflowStat?.numSucceededTasks || 0;
+  // Note: avgTasksPerRun is approximate — workflowStat covers the org's stats window
+  // (set in template), not necessarily the same window as `execs` here. Acceptable for a
+  // summary card; if precision matters later, switch to a workflow-scoped stats query.
   const avgTasksPerRun =
     totalExecutions > 0
       ? (totalTasksUsed / totalExecutions).toFixed(1)
@@ -273,7 +278,10 @@ function renderWorkflowTimeline(execs) {
     if (["FAILED", "failed"].includes(exec.status))
       executionsByDay[dateStr].failed++;
 
-    tasksByDay[dateStr].tasks += exec.tasksUsed || 0;
+    // Per-day tasksUsed is no longer available (numSuccessfulTasks dropped from the bulk query).
+    // The "Task Usage" toggle on this chart has been removed below; this object stays intact
+    // only so any other reader doesn't NPE on it.
+    tasksByDay[dateStr].tasks += 0;
   });
 
   const sortedDates = Object.keys(executionsByDay).sort(
@@ -289,7 +297,6 @@ function renderWorkflowTimeline(execs) {
         <h3 class="text-lg font-semibold text-rewst-black">Timeline</h3>
         <select id="workflow-timeline-toggle" class="input-field py-1 px-3 border border-gray-200 rounded-md">
           <option value="executions">Executions</option>
-          <option value="tasks">Task Usage</option>
         </select>
       </div>
       <div id="workflow-timeline-chart"></div>
@@ -451,24 +458,23 @@ function renderWorkflowExecutionsTable(execs, allExecutions = []) {
         link: `${baseUrl}/organizations/${orgId}/results/${originatingId}`,
         workflowName: originatingWorkflowName || 'Unknown Workflow'
       } : null,
-      tasks_used: e.tasksUsed || 0,
       trigger_type: e.triggerInfo?.type || "Unknown",
     };
   });
 
   // Conditionally include parent_execution column if any sub-workflows exist
+  // tasks_used column removed: numSuccessfulTasks is no longer in the bulk fetch
   const columns = ["execution_id", "timestamp", "status", "organization"];
   if (hasAnySubWorkflows) {
     columns.push("parent_execution");
   }
-  columns.push("tasks_used", "trigger_type");
+  columns.push("trigger_type");
 
   const headers = {
     execution_id: "Execution",
     timestamp: "Date",
     status: "Status",
     organization: "Organization",
-    tasks_used: "Tasks Used",
     trigger_type: "Trigger Type"
   };
   if (hasAnySubWorkflows) {
@@ -508,9 +514,6 @@ function renderWorkflowExecutionsTable(execs, allExecutions = []) {
           hour12: true
         });
         return `${dateStr} ${timeStr}`;
-      },
-      tasks_used: (value) => {
-        return value ? value.toLocaleString() : '0';
       },
       status: (value) => {
         if (["succeeded", "SUCCEEDED", "COMPLETED", "SUCCESS"].includes(value))

@@ -273,7 +273,11 @@ function renderDashboard() {
             const dateStr = (date.getMonth() + 1) + '/' + date.getDate();
 
             const triggerType = exec.triggerInfo?.type || 'Unknown';
-            const tasksCompleted = exec.numSuccessfulTasks || 0;
+            // Switched from summing numSuccessfulTasks to counting executions:
+            // numSuccessfulTasks is no longer fetched in bulk (it triggered the heavy
+            // addSuccessfulTaskCounts query on the backend). Counting executions per day
+            // per trigger type tells the same trend story.
+            const executionCount = 1;
 
             if (!topChartTaskUsageData[dateStr]) {
                 topChartTaskUsageData[dateStr] = {
@@ -286,7 +290,7 @@ function renderDashboard() {
                 topChartTaskUsageData[dateStr].types[triggerType] = 0;
             }
 
-            topChartTaskUsageData[dateStr].types[triggerType] += tasksCompleted;
+            topChartTaskUsageData[dateStr].types[triggerType] += executionCount;
         });
 
         const topChartSortedTaskDates = Object.keys(topChartTaskUsageData).sort((a, b) =>
@@ -483,7 +487,7 @@ function renderDashboard() {
                 }
             });
 
-            document.getElementById('chart-title-time').textContent = 'Task Usage by Trigger';
+            document.getElementById('chart-title-time').textContent = 'Executions by Trigger';
             RewstDOM.place(canvasWrapper, '#chart-time-trend');
         };
 
@@ -624,14 +628,14 @@ function renderDashboard() {
             const taskTypeData = [];
             const taskTypeTotals = {};
 
-            // Filter out sub-workflows to avoid double-counting tasks
-            // (parent's numSuccessfulTasks already includes sub-workflow tasks)
+            // Counts executions per trigger type. Filter out sub-workflows so each
+            // parent execution is counted once. Switched from summing numSuccessfulTasks
+            // to counting executions because numSuccessfulTasks is no longer in the bulk fetch.
             filteredExecutions
                 .filter(exec => !exec.parentExecutionId) // Only count root/parent executions
                 .forEach(exec => {
                     const triggerType = exec.triggerInfo?.type || 'Unknown';
-                    const tasks = exec.numSuccessfulTasks || 0;
-                    taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + tasks;
+                    taskTypeTotals[triggerType] = (taskTypeTotals[triggerType] || 0) + 1;
                 });
 
             Object.entries(taskTypeTotals).forEach(([type, count]) => {
@@ -722,7 +726,7 @@ function renderDashboard() {
                 }]
             });
 
-            document.getElementById('doughnut-title').textContent = 'Tasks by Trigger Type';
+            document.getElementById('doughnut-title').textContent = 'Executions by Trigger Type';
             RewstDOM.place(canvasWrapper, '#chart-form-types');
         };
 
@@ -1123,7 +1127,9 @@ function renderDashboard() {
                     total_runs: 0,
                     succeeded: 0,
                     failed: 0,
-                    total_tasks: 0,
+                    // total_tasks dropped: numSuccessfulTasks no longer in bulk fetch.
+                    // Per-workflow task totals available from dashboardData.workflowStats
+                    // (workflow-level only — not split by trigger type, so we don't surface here).
                     total_hours_saved: 0,
                     workflow_missing: !workflowExists && !workflowId,
                     is_sub_workflow: isSubWorkflow  // Track if this group contains sub-workflows
@@ -1132,12 +1138,6 @@ function renderDashboard() {
 
             // Count all executions (root and sub show as separate rows with their own counts)
             executionGroups[groupKey].total_runs++;
-
-            // For sub-workflows, don't add tasks (to avoid double-counting with parent)
-            // Only count tasks for root executions
-            if (!isSubWorkflow) {
-                executionGroups[groupKey].total_tasks += exec.tasksUsed || 0;
-            }
 
             // Add hours for all executions (each has its own workflow's humanSecondsSaved)
             const secondsSaved = exec.workflow?.humanSecondsSaved || 0;
@@ -1159,12 +1159,11 @@ function renderDashboard() {
 
         const executionsTable = RewstDOM.createTable(executionSummary, {
             title: '<span class="material-icons text-rewst-orange">table_chart</span> Workflow Execution Summary',
-            columns: ['workflow', 'workflow_type', 'type', 'total_tasks', 'total_runs', 'succeeded', 'failed', 'hours_saved'],
+            columns: ['workflow', 'workflow_type', 'type', 'total_runs', 'succeeded', 'failed', 'hours_saved'],
             headers: {
                 workflow: 'Workflow',
                 workflow_type: 'Workflow Type',
                 type: 'Trigger Type',
-                total_tasks: 'Tasks Used',
                 total_runs: 'Total Runs',
                 succeeded: 'Succeeded',
                 failed: 'Failed',
@@ -1221,14 +1220,6 @@ function renderDashboard() {
                         return '<span class="badge">' + value + '</span>';
                     }
                 },
-                total_tasks: (value) => {
-                    if (value >= 1000000) {
-                        return (value / 1000000).toFixed(1) + 'M';
-                    } else if (value >= 1000) {
-                        return (value / 1000).toFixed(1) + 'K';
-                    }
-                    return value.toLocaleString();
-                }
             }
         });
         RewstDOM.place(executionsTable, '#table-executions');

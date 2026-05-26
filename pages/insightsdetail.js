@@ -207,73 +207,9 @@ function generateInsights(workflows, executions, forms) {
   // Sort optimization by slowest first
   insights.optimization.sort((a, b) => b.avgRuntime - a.avgRuntime);
 
-  // 🚨 NEEDS ATTENTION: Sudden spike in task usage (per workflow)
-  Object.values(workflowStats).forEach(wf => {
-    const execs = wf.executions;
-    if (execs.length < 10) return; // Need enough data for comparison
-
-    // Sort by date
-    const sorted = [...execs].sort((a, b) => parseInt(a.createdAt) - parseInt(b.createdAt));
-
-    // Split into historical (first 70%) and recent (last 30%)
-    const splitIndex = Math.floor(sorted.length * 0.7);
-    const historical = sorted.slice(0, splitIndex);
-    const recent = sorted.slice(splitIndex);
-
-    if (historical.length < 5 || recent.length < 3) return;
-
-    // Calculate average tasks per execution
-    const historicalAvgTasks = historical.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / historical.length;
-    const recentAvgTasks = recent.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / recent.length;
-
-    // Spike: recent avg is 2x+ historical avg (and historical avg > 0)
-    if (historicalAvgTasks > 0 && recentAvgTasks >= historicalAvgTasks * 2) {
-      const increasePercent = ((recentAvgTasks - historicalAvgTasks) / historicalAvgTasks) * 100;
-      insights.attention.push({
-        type: 'task_usage_spike',
-        workflowId: wf.id,
-        workflowName: wf.name,
-        workflowLink: wf.link,
-        title: `${wf.name} task usage spiked ${increasePercent.toFixed(0)}%`,
-        description: `Recent avg: ${recentAvgTasks.toFixed(1)} tasks/run vs historical: ${historicalAvgTasks.toFixed(1)} tasks/run`,
-        severity: increasePercent >= 200 ? 'critical' : 'high',
-        failureRate: 0,
-        failedCount: 0,
-        increasePercent
-      });
-    }
-  });
-
-  // 🚨 NEEDS ATTENTION: Sudden spike in aggregate task usage
-  if (executions.length >= 20) {
-    const sorted = [...executions].sort((a, b) => parseInt(a.createdAt) - parseInt(b.createdAt));
-    const splitIndex = Math.floor(sorted.length * 0.7);
-    const historical = sorted.slice(0, splitIndex);
-    const recent = sorted.slice(splitIndex);
-
-    const historicalTotalTasks = historical.reduce((sum, e) => sum + (e.tasksUsed || 0), 0);
-    const recentTotalTasks = recent.reduce((sum, e) => sum + (e.tasksUsed || 0), 0);
-
-    // Normalize by execution count to get per-execution average
-    const historicalAvg = historicalTotalTasks / historical.length;
-    const recentAvg = recentTotalTasks / recent.length;
-
-    if (historicalAvg > 0 && recentAvg >= historicalAvg * 1.5) {
-      const increasePercent = ((recentAvg - historicalAvg) / historicalAvg) * 100;
-      insights.attention.push({
-        type: 'aggregate_task_spike',
-        workflowId: null,
-        workflowName: 'All Workflows',
-        workflowLink: null,
-        title: `Overall task usage up ${increasePercent.toFixed(0)}%`,
-        description: `Recent period: ${recentAvg.toFixed(1)} tasks/execution vs historical: ${historicalAvg.toFixed(1)} tasks/execution`,
-        severity: increasePercent >= 100 ? 'high' : 'medium',
-        failureRate: 0,
-        failedCount: 0,
-        increasePercent
-      });
-    }
-  }
+  // Task-usage spike/drop insights removed — they relied on per-execution numSuccessfulTasks
+  // which is no longer fetched in bulk. These can be reintroduced later by querying an
+  // aggregate endpoint scoped to historical vs recent windows.
 
   // 🚨 NEEDS ATTENTION: Sudden drop in executions for consistent workflows
   Object.values(workflowStats).forEach(wf => {
@@ -319,60 +255,8 @@ function generateInsights(workflows, executions, forms) {
     }
   });
 
-  // 🚨 NEEDS ATTENTION: Sudden drop in task usage (per workflow) - especially to zero
-  Object.values(workflowStats).forEach(wf => {
-    const execs = wf.executions;
-    if (execs.length < 10) return;
-
-    // Sort by date
-    const sorted = [...execs].sort((a, b) => parseInt(a.createdAt) - parseInt(b.createdAt));
-
-    // Split into historical (first 70%) and recent (last 30%)
-    const splitIndex = Math.floor(sorted.length * 0.7);
-    const historical = sorted.slice(0, splitIndex);
-    const recent = sorted.slice(splitIndex);
-
-    if (historical.length < 5 || recent.length < 3) return;
-
-    // Calculate average tasks per execution
-    const historicalAvgTasks = historical.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / historical.length;
-    const recentAvgTasks = recent.reduce((sum, e) => sum + (e.tasksUsed || 0), 0) / recent.length;
-
-    // Only flag if historical avg was meaningful (at least 5 tasks on average)
-    if (historicalAvgTasks < 5) return;
-
-    // Critical: dropped to zero or near-zero (less than 1 task avg)
-    if (recentAvgTasks < 1) {
-      insights.attention.push({
-        type: 'task_usage_zero',
-        workflowId: wf.id,
-        workflowName: wf.name,
-        workflowLink: wf.link,
-        title: `${wf.name} task usage dropped to zero`,
-        description: `Was using ${historicalAvgTasks.toFixed(1)} tasks/run, now ${recentAvgTasks.toFixed(1)} - workflow may be broken`,
-        severity: 'critical',
-        failureRate: 0,
-        failedCount: 0,
-        dropPercent: 100
-      });
-    }
-    // High: dropped by 50%+ (but not to zero)
-    else if (recentAvgTasks < historicalAvgTasks * 0.5) {
-      const dropPercent = ((historicalAvgTasks - recentAvgTasks) / historicalAvgTasks) * 100;
-      insights.attention.push({
-        type: 'task_usage_drop',
-        workflowId: wf.id,
-        workflowName: wf.name,
-        workflowLink: wf.link,
-        title: `${wf.name} task usage dropped ${dropPercent.toFixed(0)}%`,
-        description: `Recent avg: ${recentAvgTasks.toFixed(1)} tasks/run vs historical: ${historicalAvgTasks.toFixed(1)} tasks/run`,
-        severity: dropPercent >= 80 ? 'high' : 'medium',
-        failureRate: 0,
-        failedCount: 0,
-        dropPercent
-      });
-    }
-  });
+  // Task-usage drop insight removed — relied on per-execution numSuccessfulTasks.
+  // Workflow-health detection here can be reintroduced via aggregate stats queries later.
 
   // 💜 LOW ACTIVITY: Workflows with no executions (limit to 5)
   const executedWorkflowIds = new Set(Object.keys(workflowStats));
