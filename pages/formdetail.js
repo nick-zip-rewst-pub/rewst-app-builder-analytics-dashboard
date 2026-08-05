@@ -482,13 +482,13 @@ function renderFormInsights(executions) {
                 return t.length > 28 ? t.slice(0, 27) + '…' : t;
               }
             },
-            grid: { drawTicks: false, color: 'rgba(0,0,0,0.05)' }
+            grid: { drawTicks: false, color: getDashboardChartPalette().grid }
           },
           y: {
             stacked: (mode === 'stacked'),
             beginAtZero: true,
             ticks: { precision: 0 },
-            grid: { color: 'rgba(0,0,0,0.05)' }
+            grid: { color: getDashboardChartPalette().grid }
           }
         },
         animation: false

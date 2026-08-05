@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -58,13 +58,28 @@
   --rewst-snooze: #504384;
   --rewst-quincy: #6a5445;
 
+  /* Theme surfaces */
+  --theme-page: #ECEFF1;
+  --theme-page-gradient-start: #f0f4f8;
+  --theme-page-gradient-end: #ffffff;
+  --theme-surface: #FFFFFF;
+  --theme-surface-muted: #ECEFF1;
+  --theme-surface-raised: #FFFFFF;
+  --theme-text: #333333;
+  --theme-text-strong: #000000;
+  --theme-text-muted: #90A4AE;
+  --theme-border: #CFD8DC;
+  --theme-grid: rgba(51, 51, 51, 0.10);
+  --theme-tooltip: rgba(17, 24, 39, 0.94);
+  --theme-overlay: rgba(255, 255, 255, 0.20);
+
   /* Neutral Colors */
-  --rewst-black: #000000;
-  --rewst-dark-gray: #333333;
-  --rewst-gray: #90A4AE;
-  --rewst-light-gray: #CFD8DC;
-  --rewst-light: #ECEFF1;
-  --rewst-white: #FFFFFF;
+  --rewst-black: var(--theme-text-strong);
+  --rewst-dark-gray: var(--theme-text);
+  --rewst-gray: var(--theme-text-muted);
+  --rewst-light-gray: var(--theme-border);
+  --rewst-light: var(--theme-surface-muted);
+  --rewst-white: var(--theme-surface);
 
   /* Semantic Colors */
   --rewst-success: #2BB5B6;
@@ -86,8 +101,8 @@ html {
 body {
   font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   color: var(--rewst-dark-gray);
-  background-color: var(--rewst-light);
-  background: linear-gradient(to bottom, #f0f4f8 0%, #ffffff 100%),
+  background-color: var(--theme-page);
+  background: linear-gradient(to bottom, var(--theme-page-gradient-start) 0%, var(--theme-page-gradient-end) 100%),
     url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' /%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.02'/%3E%3C/svg%3E");
 
 }
@@ -1061,7 +1076,7 @@ select#form-selector {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: white;
+  background: var(--theme-surface);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
@@ -1617,6 +1632,224 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
   animation: session-fall-over 2s ease-in-out forwards, session-gentle-rock 3s ease-in-out 2.2s infinite;
 }
 
+/* ============================================
+   PERSISTENT LIGHT / DARK THEME
+   ============================================ */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --theme-page: #0f1720;
+  --theme-page-gradient-start: #0f1720;
+  --theme-page-gradient-end: #121d26;
+  --theme-surface: #18232d;
+  --theme-surface-muted: #22313d;
+  --theme-surface-raised: #1d2b36;
+  --theme-text: #d6e0e5;
+  --theme-text-strong: #f4f7f9;
+  --theme-text-muted: #9fb0ba;
+  --theme-border: #344652;
+  --theme-grid: rgba(214, 224, 229, 0.14);
+  --theme-tooltip: rgba(8, 14, 20, 0.96);
+  --theme-overlay: rgba(8, 14, 20, 0.48);
+}
+
+.theme-toggle-label {
+  display: grid;
+  grid-template-columns: 1.5rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.25rem;
+  color: var(--theme-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.theme-toggle-icon {
+  color: var(--rewst-teal);
+  font-size: 1.25rem;
+}
+
+.theme-switch-track {
+  position: relative;
+  display: inline-flex;
+  width: 2.5rem;
+  height: 1.375rem;
+  padding: 0.1875rem;
+  border: 1px solid var(--theme-border);
+  border-radius: 9999px;
+  background: var(--theme-surface-muted);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.theme-switch-thumb {
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 50%;
+  background: var(--theme-text-muted);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
+  transition: transform 0.2s ease, background-color 0.2s ease;
+}
+
+#theme-toggle:checked + .theme-switch-track {
+  border-color: var(--rewst-teal);
+  background: var(--rewst-teal);
+}
+
+#theme-toggle:checked + .theme-switch-track .theme-switch-thumb {
+  background: #ffffff;
+  transform: translateX(1.125rem);
+}
+
+#theme-toggle:focus-visible + .theme-switch-track {
+  outline: 3px solid rgba(43, 181, 182, 0.35);
+  outline-offset: 2px;
+}
+
+.sidebar.collapsed .theme-toggle-label {
+  display: flex;
+  justify-content: center;
+}
+
+.sidebar.collapsed .theme-switch-track {
+  display: none;
+}
+
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] #main-content {
+  background-color: var(--theme-page);
+}
+
+:root[data-theme="dark"] .sidebar,
+:root[data-theme="dark"] #advanced-filter-drawer,
+:root[data-theme="dark"] .sticky-header,
+:root[data-theme="dark"] .card,
+:root[data-theme="dark"] .insight-card,
+:root[data-theme="dark"] .rewst-table-container,
+:root[data-theme="dark"] table {
+  background-color: var(--theme-surface);
+  color: var(--theme-text);
+}
+
+:root[data-theme="dark"] .card-success,
+:root[data-theme="dark"] .alert-success,
+:root[data-theme="dark"] .insight-empty-state {
+  background-color: rgba(43, 181, 182, 0.12);
+  color: var(--theme-text);
+}
+
+:root[data-theme="dark"] .card-warning,
+:root[data-theme="dark"] .alert-warning {
+  background-color: rgba(249, 161, 0, 0.12);
+  color: var(--theme-text);
+}
+
+:root[data-theme="dark"] .card-error,
+:root[data-theme="dark"] .alert-error {
+  background-color: rgba(247, 91, 88, 0.12);
+  color: var(--theme-text);
+}
+
+:root[data-theme="dark"] .alert-info {
+  background-color: rgba(0, 148, 144, 0.12);
+  color: var(--theme-text);
+}
+
+:root[data-theme="dark"] .loading-overlay {
+  background-color: var(--theme-overlay);
+}
+
+:root[data-theme="dark"] .loading-content {
+  background: rgba(24, 35, 45, 0.96);
+  border-color: var(--theme-border);
+}
+
+:root[data-theme="dark"] form input,
+:root[data-theme="dark"] form textarea,
+:root[data-theme="dark"] form select,
+:root[data-theme="dark"] input.form-input,
+:root[data-theme="dark"] textarea.form-input,
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] select.form-input,
+:root[data-theme="dark"] select#form-selector,
+:root[data-theme="dark"] #form-selector.form-input,
+:root[data-theme="dark"] div select#form-selector {
+  background-color: var(--theme-surface-raised) !important;
+  border-color: var(--theme-border) !important;
+  color: var(--theme-text) !important;
+}
+
+:root[data-theme="dark"] select,
+:root[data-theme="dark"] select.form-input,
+:root[data-theme="dark"] select#form-selector {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23d6e0e5' d='M6 9L1 4h10z'/%3E%3C/svg%3E") !important;
+  background-repeat: no-repeat !important;
+  background-position: right 0.75rem center !important;
+  background-size: 0.75rem !important;
+  padding-right: 2.5rem !important;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+:root[data-theme="dark"] thead,
+:root[data-theme="dark"] tbody tr:hover {
+  background-color: var(--theme-surface-muted);
+}
+
+:root[data-theme="dark"] .bg-white {
+  background-color: var(--theme-surface) !important;
+}
+
+:root[data-theme="dark"] .bg-gray-50,
+:root[data-theme="dark"] .bg-gray-100,
+:root[data-theme="dark"] .bg-gray-200,
+:root[data-theme="dark"] .bg-gray-300 {
+  background-color: var(--theme-surface-muted) !important;
+}
+
+:root[data-theme="dark"] .text-gray-900,
+:root[data-theme="dark"] .text-gray-700,
+:root[data-theme="dark"] .text-gray-600 {
+  color: var(--theme-text) !important;
+}
+
+:root[data-theme="dark"] .text-gray-500,
+:root[data-theme="dark"] .text-gray-400 {
+  color: var(--theme-text-muted) !important;
+}
+
+:root[data-theme="dark"] .border-gray-100,
+:root[data-theme="dark"] .border-gray-200,
+:root[data-theme="dark"] .border-gray-300,
+:root[data-theme="dark"] .border-gray-400,
+:root[data-theme="dark"] .divide-gray-200 > :not([hidden]) ~ :not([hidden]) {
+  border-color: var(--theme-border) !important;
+}
+
+:root[data-theme="dark"] .hover\:bg-gray-50:hover,
+:root[data-theme="dark"] .hover\:bg-gray-100:hover,
+:root[data-theme="dark"] .hover\:bg-gray-200:hover,
+:root[data-theme="dark"] .hover\:bg-rewst-light:hover,
+:root[data-theme="dark"] .hover\:bg-rewst-light-gray:hover {
+  background-color: var(--theme-surface-muted) !important;
+}
+
+:root[data-theme="dark"] .hover\:text-gray-600:hover,
+:root[data-theme="dark"] .hover\:text-gray-700:hover,
+:root[data-theme="dark"] .hover\:text-rewst-black:hover {
+  color: var(--theme-text-strong) !important;
+}
+
+:root[data-theme="dark"] #org-filter-dropdown::-webkit-scrollbar-track,
+:root[data-theme="dark"] #trigger-filter-dropdown::-webkit-scrollbar-track {
+  background: var(--theme-surface-muted);
+}
+
+:root[data-theme="dark"] #org-filter-dropdown::-webkit-scrollbar-thumb,
+:root[data-theme="dark"] #trigger-filter-dropdown::-webkit-scrollbar-thumb {
+  background: var(--theme-border);
+}
+
+
     /* Loading progress pulse animation - loops 15% to 60% */
     @keyframes progressPulse {
       0% { width: 15%; }
@@ -1774,6 +2007,18 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
       </div>
 
     </nav>
+
+    <!-- Theme Preference -->
+    <div class="theme-control border-t border-gray-200 p-4">
+      <label for="theme-toggle" class="theme-toggle-label" title="Use dark mode">
+        <span class="material-icons theme-toggle-icon" aria-hidden="true">light_mode</span>
+        <span class="nav-text">Dark mode</span>
+        <input id="theme-toggle" class="sr-only" type="checkbox" role="switch" aria-label="Use dark mode">
+        <span class="theme-switch-track" aria-hidden="true">
+          <span class="theme-switch-thumb"></span>
+        </span>
+      </label>
+    </div>
 
     <!-- Load Sub-Workflows Button (Bottom of Sidebar) -->
     <div id="load-sub-workflows-container" class="p-4 border-t border-gray-200 hidden">
@@ -12307,6 +12552,174 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = RewstDOM;
 }
 
+    // Import dashboard theme manager
+    (function attachRewstTheme(root, factory) {
+  const api = factory();
+
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  }
+
+  if (root) {
+    root.RewstTheme = api;
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : this, function createRewstThemeApi() {
+  const THEME_KEY = 'theme';
+  const DEFAULT_THEME = 'light';
+  const SUPPORTED_THEMES = new Set(['light', 'dark']);
+
+  function assertTheme(theme) {
+    if (!SUPPORTED_THEMES.has(theme)) {
+      throw new Error(`Unsupported theme: ${theme}`);
+    }
+    return theme;
+  }
+
+  function requestResult(request) {
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('IndexedDB request failed'));
+    });
+  }
+
+  function createPreferenceStore({ getDatabase, storeName = 'preferences' }) {
+    if (typeof getDatabase !== 'function') {
+      throw new Error('Preference store requires a database provider');
+    }
+
+    return {
+      async load(key) {
+        const database = await getDatabase();
+        const store = database.transaction(storeName, 'readonly').objectStore(storeName);
+        const record = await requestResult(store.get(key));
+        return record?.value ?? null;
+      },
+
+      async save(key, value) {
+        const database = await getDatabase();
+        const store = database.transaction(storeName, 'readwrite').objectStore(storeName);
+        await requestResult(store.put({ key, value }));
+      },
+    };
+  }
+
+  function createThemeManager({ document, storage, onThemeChange = () => {} }) {
+    if (!document?.documentElement) {
+      throw new Error('Theme manager requires a document root');
+    }
+
+    let currentTheme = DEFAULT_THEME;
+    let toggleBound = false;
+
+    function syncControls(theme) {
+      const toggle = document.getElementById?.('theme-toggle');
+      const isDark = theme === 'dark';
+      const actionLabel = isDark ? 'Use light mode' : 'Use dark mode';
+
+      if (toggle) {
+        toggle.checked = isDark;
+        toggle.setAttribute?.('aria-checked', String(isDark));
+        toggle.setAttribute?.('aria-label', actionLabel);
+      }
+
+      const icon = document.querySelector?.('.theme-toggle-icon');
+      if (icon) icon.textContent = isDark ? 'light_mode' : 'dark_mode';
+
+      const label = document.querySelector?.('.theme-toggle-label');
+      if (label) label.title = actionLabel;
+    }
+
+    function applyTheme(theme) {
+      currentTheme = assertTheme(theme);
+      document.documentElement.dataset.theme = currentTheme;
+      syncControls(currentTheme);
+      onThemeChange(currentTheme);
+      return currentTheme;
+    }
+
+    const manager = {
+      async init() {
+        let storedTheme = null;
+        try {
+          storedTheme = await storage?.load?.(THEME_KEY);
+        } catch (_error) {
+          storedTheme = null;
+        }
+
+        return applyTheme(SUPPORTED_THEMES.has(storedTheme) ? storedTheme : DEFAULT_THEME);
+      },
+
+      async setTheme(theme) {
+        applyTheme(theme);
+        let persisted = true;
+
+        try {
+          await storage?.save?.(THEME_KEY, currentTheme);
+        } catch (_error) {
+          persisted = false;
+        }
+
+        return { theme: currentTheme, persisted };
+      },
+
+      async toggle() {
+        return this.setTheme(currentTheme === 'dark' ? 'light' : 'dark');
+      },
+
+      bindToggle({ onPersistenceError = () => {} } = {}) {
+        const toggle = document.getElementById?.('theme-toggle');
+        if (!toggle?.addEventListener || toggleBound) return Boolean(toggle);
+
+        toggle.addEventListener('change', async () => {
+          const result = await manager.setTheme(toggle.checked ? 'dark' : 'light');
+          if (!result.persisted) onPersistenceError(result.theme);
+        });
+        toggleBound = true;
+        return true;
+      },
+
+      getTheme() {
+        return currentTheme;
+      },
+    };
+
+    return manager;
+  }
+
+  function refreshCharts(ChartApi, renderCurrentPage) {
+    if (ChartApi?.instances) {
+      const instances = typeof ChartApi.instances.values === 'function'
+        ? Array.from(ChartApi.instances.values())
+        : Object.values(ChartApi.instances);
+      instances.forEach(chart => chart?.destroy?.());
+    }
+
+    renderCurrentPage?.();
+  }
+
+  function readChartPalette(root, getComputedStyleFn) {
+    const styles = getComputedStyleFn(root);
+    const read = property => styles.getPropertyValue(property).trim();
+
+    return {
+      text: read('--theme-text'),
+      mutedText: read('--theme-text-muted'),
+      grid: read('--theme-grid'),
+      border: read('--theme-border'),
+      surface: read('--theme-surface'),
+      tooltipBackground: read('--theme-tooltip'),
+    };
+  }
+
+  return {
+    createPreferenceStore,
+    createThemeManager,
+    readChartPalette,
+    refreshCharts,
+  };
+});
+
+
           // Dashboard initialization script
     (async function() {
       if (window.DEBUG_MODE) console.log("🚀 Initializing Analytics Dashboard");
@@ -12347,7 +12760,8 @@ if (typeof module !== 'undefined' && module.exports) {
       // ============================================
       const IDB_DB_NAME = 'rewst_dashboard_db';
       const IDB_STORE_NAME = 'cache_store';
-      const IDB_VERSION = 1;
+      const IDB_PREFERENCES_STORE_NAME = 'preferences';
+      const IDB_VERSION = 2;
 
       // set global debug flag
       window.DEBUG_MODE = true; // Set to true when debugging
@@ -12427,6 +12841,10 @@ if (typeof module !== 'undefined' && module.exports) {
                 const store = db.createObjectStore(IDB_STORE_NAME, { keyPath: 'cacheKey' });
                 store.createIndex('timestamp', 'timestamp', { unique: false });
                 debugLog('📦 IndexedDB store created:', IDB_STORE_NAME);
+              }
+              if (!db.objectStoreNames.contains(IDB_PREFERENCES_STORE_NAME)) {
+                db.createObjectStore(IDB_PREFERENCES_STORE_NAME, { keyPath: 'key' });
+                debugLog('⚙️ IndexedDB store created:', IDB_PREFERENCES_STORE_NAME);
               }
             };
             request.onblocked = () => { clearTimeout(timeout); debugWarn('⚠️ IndexedDB blocked'); reject(new Error('IndexedDB blocked')); };
@@ -12605,8 +13023,48 @@ if (typeof module !== 'undefined' && module.exports) {
         }
       };
 
-      // Initialize cache manager on load
-      CacheManager.init().catch(err => debugWarn('⚠️ Cache manager initialization warning:', err));
+      // Initialize storage and restore the theme before the first dashboard render.
+      await CacheManager.init();
+      let themeRefreshHandler = null;
+      const themePreferenceStore = RewstTheme.createPreferenceStore({
+        storeName: IDB_PREFERENCES_STORE_NAME,
+        getDatabase: async () => {
+          await CacheManager.init();
+          if (!CacheManager.useIndexedDB || !CacheManager.db) {
+            throw new Error('IndexedDB preferences are unavailable');
+          }
+          return CacheManager.db;
+        }
+      });
+      const dashboardThemeManager = RewstTheme.createThemeManager({
+        document,
+        storage: themePreferenceStore,
+        onThemeChange: () => themeRefreshHandler?.()
+      });
+      await dashboardThemeManager.init();
+      window.dashboardThemeManager = dashboardThemeManager;
+      dashboardThemeManager.bindToggle({
+        onPersistenceError: () => {
+          debugWarn('⚠️ Theme changed for this session, but IndexedDB persistence failed');
+        }
+      });
+
+      function getDashboardChartPalette() {
+        return RewstTheme.readChartPalette(document.documentElement, window.getComputedStyle);
+      }
+      window.getDashboardChartPalette = getDashboardChartPalette;
+
+      function applyDashboardChartDefaults() {
+        if (!window.Chart) return;
+        const palette = getDashboardChartPalette();
+        Chart.defaults.color = palette.text;
+        Chart.defaults.borderColor = palette.grid;
+        Chart.defaults.plugins.legend.labels.color = palette.text;
+        Chart.defaults.plugins.tooltip.backgroundColor = palette.tooltipBackground;
+        Chart.defaults.plugins.tooltip.titleColor = palette.text;
+        Chart.defaults.plugins.tooltip.bodyColor = palette.text;
+      }
+      applyDashboardChartDefaults();
 
       // Generate cache key based on days parameter (includes org ID for proper cache isolation)
       function getCacheKey(days, orgId = null) {
@@ -12673,6 +13131,10 @@ if (typeof module !== 'undefined' && module.exports) {
       };
 
       let currentPage = 'overall';
+      themeRefreshHandler = () => {
+        applyDashboardChartDefaults();
+        RewstTheme.refreshCharts(window.Chart, () => pages[currentPage].render());
+      };
 
       // CACHE MANAGEMENT FUNCTIONS (Using IndexedDB with localStorage fallback)
 
@@ -15103,7 +15565,7 @@ function renderDashboard() {
                     datasets: [{
                         data: data,
                         backgroundColor: backgroundColors,
-                        borderColor: '#ffffff',
+                        borderColor: getDashboardChartPalette().surface,
                         borderWidth: 2
                     }]
                 },
@@ -15151,13 +15613,13 @@ function renderDashboard() {
                         // Number
                         const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
                         ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#000000';
+                        ctx.fillStyle = getDashboardChartPalette().text;
                         ctx.fillText(formatCenterNumber(filteredExecutions.length), centerX, centerY - 10);
 
                         // Label
                         const labelFontSize = chart.height < 250 ? 10 : 12;
                         ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#90A4AE';
+                        ctx.fillStyle = getDashboardChartPalette().mutedText;
                         ctx.fillText('Total Executions', centerX, centerY + 20);
 
                         ctx.restore();
@@ -15215,7 +15677,7 @@ function renderDashboard() {
                     datasets: [{
                         data: taskTypeData.map(item => item.count),
                         backgroundColor: backgroundColors,
-                        borderColor: '#ffffff',
+                        borderColor: getDashboardChartPalette().surface,
                         borderWidth: 2
                     }]
                 },
@@ -15263,13 +15725,13 @@ function renderDashboard() {
                         // Number
                         const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
                         ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#000000';
+                        ctx.fillStyle = getDashboardChartPalette().text;
                         ctx.fillText(formatCenterNumber(totalTasks), centerX, centerY - 10);
 
                         // Label
                         const labelFontSize = chart.height < 250 ? 10 : 12;
                         ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#90A4AE';
+                        ctx.fillStyle = getDashboardChartPalette().mutedText;
                         ctx.fillText('Total Tasks', centerX, centerY + 20);
 
                         ctx.restore();
@@ -15782,6 +16244,7 @@ function renderDashboard() {
         RewstDOM.showError('Failed to render dashboard: ' + error.message);
     }
 }
+
 
       // Render the workflow details dashboard code  (Workflow Details Page)
       //function renderWorkflowDetailsDashboard()
@@ -16809,13 +17272,13 @@ function renderFormInsights(executions) {
                 return t.length > 28 ? t.slice(0, 27) + '…' : t;
               }
             },
-            grid: { drawTicks: false, color: 'rgba(0,0,0,0.05)' }
+            grid: { drawTicks: false, color: getDashboardChartPalette().grid }
           },
           y: {
             stacked: (mode === 'stacked'),
             beginAtZero: true,
             ticks: { precision: 0 },
-            grid: { color: 'rgba(0,0,0,0.05)' }
+            grid: { color: getDashboardChartPalette().grid }
           }
         },
         animation: false
@@ -17498,6 +17961,7 @@ function updateRenderedDynamicLabels(localCache, formId) {
     console.warn("updateRenderedDynamicLabels failed:", err);
   }
 }
+
 
       // Render the Insights details dashboard code  (Insights Details Page)
       //function renderInsightsDashboard()
@@ -18494,7 +18958,7 @@ function renderAdoptionDashboard() {
         },
         scales: {
           x: {
-            grid: { color: 'rgba(0,0,0,0.05)' },
+            grid: { color: getDashboardChartPalette().grid },
             ticks: {
               maxRotation: 45,
               minRotation: 45
@@ -18505,7 +18969,7 @@ function renderAdoptionDashboard() {
             ticks: {
               precision: 0
             },
-            grid: { color: 'rgba(0,0,0,0.05)' }
+            grid: { color: getDashboardChartPalette().grid }
           }
         }
       },
@@ -18716,11 +19180,11 @@ function renderAdoptionDashboard() {
             ticks: {
               precision: 0
             },
-            grid: { color: 'rgba(0,0,0,0.05)' }
+            grid: { color: getDashboardChartPalette().grid }
           },
           y: {
             stacked: true,
-            grid: { color: 'rgba(0,0,0,0.05)' },
+            grid: { color: getDashboardChartPalette().grid },
             ticks: {
               font: { size: 10 }
             }
@@ -18804,7 +19268,7 @@ function renderAdoptionDashboard() {
         datasets: [{
           data: data,
           backgroundColor: colors.slice(0, labels.length),
-          borderColor: '#ffffff',
+          borderColor: getDashboardChartPalette().surface,
           borderWidth: 2
         }]
       },
@@ -18848,13 +19312,13 @@ function renderAdoptionDashboard() {
           // Number
           const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
           ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = getDashboardChartPalette().text;
           ctx.fillText(formatCenterNumber(totalSubmissions), centerX, centerY - 10);
 
           // Label
           const labelFontSize = chart.height < 250 ? 10 : 12;
           ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#90A4AE';
+          ctx.fillStyle = getDashboardChartPalette().mutedText;
           ctx.fillText('Form Submissions', centerX, centerY + 20);
 
           ctx.restore();
@@ -18921,7 +19385,7 @@ function renderAdoptionDashboard() {
         datasets: [{
           data: data,
           backgroundColor: colors.slice(0, labels.length),
-          borderColor: '#ffffff',
+          borderColor: getDashboardChartPalette().surface,
           borderWidth: 2
         }]
       },
@@ -18966,13 +19430,13 @@ function renderAdoptionDashboard() {
           // Number
           const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
           ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = getDashboardChartPalette().text;
           ctx.fillText(formatCenterNumber(totalTime) + 'h', centerX, centerY - 10);
 
           // Label
           const labelFontSize = chart.height < 250 ? 10 : 12;
           ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#90A4AE';
+          ctx.fillStyle = getDashboardChartPalette().mutedText;
           ctx.fillText('Time Saved', centerX, centerY + 20);
 
           ctx.restore();
@@ -19038,7 +19502,7 @@ function renderAdoptionDashboard() {
         datasets: [{
           data: data,
           backgroundColor: colors.slice(0, labels.length),
-          borderColor: '#ffffff',
+          borderColor: getDashboardChartPalette().surface,
           borderWidth: 2
         }]
       },
@@ -19082,13 +19546,13 @@ function renderAdoptionDashboard() {
           // Number
           const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
           ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = getDashboardChartPalette().text;
           ctx.fillText(formatCenterNumber(totalSubmissions), centerX, centerY - 10);
 
           // Label
           const labelFontSize = chart.height < 250 ? 10 : 12;
           ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#90A4AE';
+          ctx.fillStyle = getDashboardChartPalette().mutedText;
           ctx.fillText('Form Submissions', centerX, centerY + 20);
 
           ctx.restore();
@@ -19178,6 +19642,7 @@ function renderAdoptionDashboard() {
 
   console.log("✅ Adoption dashboard rendered successfully");
 }
+
 
       // Initialize dashboard
       await loadDashboard();

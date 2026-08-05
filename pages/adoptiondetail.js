@@ -498,7 +498,7 @@ function renderAdoptionDashboard() {
         },
         scales: {
           x: {
-            grid: { color: 'rgba(0,0,0,0.05)' },
+            grid: { color: getDashboardChartPalette().grid },
             ticks: {
               maxRotation: 45,
               minRotation: 45
@@ -509,7 +509,7 @@ function renderAdoptionDashboard() {
             ticks: {
               precision: 0
             },
-            grid: { color: 'rgba(0,0,0,0.05)' }
+            grid: { color: getDashboardChartPalette().grid }
           }
         }
       },
@@ -720,11 +720,11 @@ function renderAdoptionDashboard() {
             ticks: {
               precision: 0
             },
-            grid: { color: 'rgba(0,0,0,0.05)' }
+            grid: { color: getDashboardChartPalette().grid }
           },
           y: {
             stacked: true,
-            grid: { color: 'rgba(0,0,0,0.05)' },
+            grid: { color: getDashboardChartPalette().grid },
             ticks: {
               font: { size: 10 }
             }
@@ -808,7 +808,7 @@ function renderAdoptionDashboard() {
         datasets: [{
           data: data,
           backgroundColor: colors.slice(0, labels.length),
-          borderColor: '#ffffff',
+          borderColor: getDashboardChartPalette().surface,
           borderWidth: 2
         }]
       },
@@ -852,13 +852,13 @@ function renderAdoptionDashboard() {
           // Number
           const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
           ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = getDashboardChartPalette().text;
           ctx.fillText(formatCenterNumber(totalSubmissions), centerX, centerY - 10);
 
           // Label
           const labelFontSize = chart.height < 250 ? 10 : 12;
           ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#90A4AE';
+          ctx.fillStyle = getDashboardChartPalette().mutedText;
           ctx.fillText('Form Submissions', centerX, centerY + 20);
 
           ctx.restore();
@@ -925,7 +925,7 @@ function renderAdoptionDashboard() {
         datasets: [{
           data: data,
           backgroundColor: colors.slice(0, labels.length),
-          borderColor: '#ffffff',
+          borderColor: getDashboardChartPalette().surface,
           borderWidth: 2
         }]
       },
@@ -970,13 +970,13 @@ function renderAdoptionDashboard() {
           // Number
           const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
           ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = getDashboardChartPalette().text;
           ctx.fillText(formatCenterNumber(totalTime) + 'h', centerX, centerY - 10);
 
           // Label
           const labelFontSize = chart.height < 250 ? 10 : 12;
           ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#90A4AE';
+          ctx.fillStyle = getDashboardChartPalette().mutedText;
           ctx.fillText('Time Saved', centerX, centerY + 20);
 
           ctx.restore();
@@ -1042,7 +1042,7 @@ function renderAdoptionDashboard() {
         datasets: [{
           data: data,
           backgroundColor: colors.slice(0, labels.length),
-          borderColor: '#ffffff',
+          borderColor: getDashboardChartPalette().surface,
           borderWidth: 2
         }]
       },
@@ -1086,13 +1086,13 @@ function renderAdoptionDashboard() {
           // Number
           const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
           ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#000000';
+          ctx.fillStyle = getDashboardChartPalette().text;
           ctx.fillText(formatCenterNumber(totalSubmissions), centerX, centerY - 10);
 
           // Label
           const labelFontSize = chart.height < 250 ? 10 : 12;
           ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-          ctx.fillStyle = '#90A4AE';
+          ctx.fillStyle = getDashboardChartPalette().mutedText;
           ctx.fillText('Form Submissions', centerX, centerY + 20);
 
           ctx.restore();

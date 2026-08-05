@@ -18,6 +18,7 @@ const MARKERS = {
   '{{ CSS_THEME }}': 'src/rewst-override-tailwind.css',
   '{{ GRAPHQL_LIB }}': 'src/zip-graphql-js-lib-v2-optimized.js',
   '{{ DOM_BUILDER }}': 'src/rewst-dom-builder.js',
+  '{{ THEME_MANAGER }}': 'src/theme-manager.js',
   '{{ PAGE_OVERALL }}': 'pages/overalldash.js',
   '{{ PAGE_WORKFLOW }}': 'pages/workflowdetail.js',
   '{{ PAGE_FORM }}': 'pages/formdetail.js',

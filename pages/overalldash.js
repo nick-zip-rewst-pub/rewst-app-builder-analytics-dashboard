@@ -552,7 +552,7 @@ function renderDashboard() {
                     datasets: [{
                         data: data,
                         backgroundColor: backgroundColors,
-                        borderColor: '#ffffff',
+                        borderColor: getDashboardChartPalette().surface,
                         borderWidth: 2
                     }]
                 },
@@ -600,13 +600,13 @@ function renderDashboard() {
                         // Number
                         const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
                         ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#000000';
+                        ctx.fillStyle = getDashboardChartPalette().text;
                         ctx.fillText(formatCenterNumber(filteredExecutions.length), centerX, centerY - 10);
 
                         // Label
                         const labelFontSize = chart.height < 250 ? 10 : 12;
                         ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#90A4AE';
+                        ctx.fillStyle = getDashboardChartPalette().mutedText;
                         ctx.fillText('Total Executions', centerX, centerY + 20);
 
                         ctx.restore();
@@ -664,7 +664,7 @@ function renderDashboard() {
                     datasets: [{
                         data: taskTypeData.map(item => item.count),
                         backgroundColor: backgroundColors,
-                        borderColor: '#ffffff',
+                        borderColor: getDashboardChartPalette().surface,
                         borderWidth: 2
                     }]
                 },
@@ -712,13 +712,13 @@ function renderDashboard() {
                         // Number
                         const fontSize = chart.height < 250 ? 24 : (chart.height < 350 ? 32 : 40);
                         ctx.font = `bold ${fontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#000000';
+                        ctx.fillStyle = getDashboardChartPalette().text;
                         ctx.fillText(formatCenterNumber(totalTasks), centerX, centerY - 10);
 
                         // Label
                         const labelFontSize = chart.height < 250 ? 10 : 12;
                         ctx.font = `${labelFontSize}px Poppins, sans-serif`;
-                        ctx.fillStyle = '#90A4AE';
+                        ctx.fillStyle = getDashboardChartPalette().mutedText;
                         ctx.fillText('Total Tasks', centerX, centerY + 20);
 
                         ctx.restore();
