@@ -1638,19 +1638,32 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --theme-page: #0f1720;
-  --theme-page-gradient-start: #0f1720;
-  --theme-page-gradient-end: #121d26;
-  --theme-surface: #18232d;
-  --theme-surface-muted: #22313d;
-  --theme-surface-raised: #1d2b36;
-  --theme-text: #d6e0e5;
-  --theme-text-strong: #f4f7f9;
-  --theme-text-muted: #9fb0ba;
-  --theme-border: #344652;
-  --theme-grid: rgba(214, 224, 229, 0.14);
-  --theme-tooltip: rgba(8, 14, 20, 0.96);
-  --theme-overlay: rgba(8, 14, 20, 0.48);
+  --theme-page: #18242d;
+  --theme-page-gradient-start: #18242d;
+  --theme-page-gradient-end: #1d2b34;
+  --theme-surface: #24343e;
+  --theme-surface-muted: #30434f;
+  --theme-surface-raised: #2a3c47;
+  --theme-text: #e7eef2;
+  --theme-text-strong: #ffffff;
+  --theme-text-muted: #b7c5cd;
+  --theme-border: #4a616e;
+  --theme-grid: rgba(231, 238, 242, 0.18);
+  --theme-tooltip: rgba(16, 26, 33, 0.97);
+  --theme-overlay: rgba(16, 26, 33, 0.44);
+
+  /* Brighter tints keep brand accents legible without becoming card backgrounds. */
+  --rewst-teal: #53cbc7;
+  --rewst-light-teal: #75d8d5;
+  --rewst-fandango: #e37bb9;
+  --rewst-orange: #ffc15c;
+  --rewst-bask: #ff8581;
+  --rewst-snooze: #a99dde;
+  --rewst-quincy: #c2aa9a;
+  --rewst-success: #64d4b0;
+  --rewst-warning: #ffc15c;
+  --rewst-error: #ff8581;
+  --rewst-info: #53cbc7;
 }
 
 .theme-toggle-label {
@@ -1730,6 +1743,42 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
   color: var(--theme-text);
 }
 
+/* Solid KPI gradients overpower the dark interface. Keep one neutral card
+   surface and use the brand colors as compact accents instead. */
+:root[data-theme="dark"] .card-metric-teal,
+:root[data-theme="dark"] .card-metric-fandango,
+:root[data-theme="dark"] .card-metric-orange,
+:root[data-theme="dark"] .card-metric-success,
+:root[data-theme="dark"] .card-metric-error,
+:root[data-theme="dark"] .card-metric-warning,
+:root[data-theme="dark"] .card-metric-snooze,
+:root[data-theme="dark"] .card-metric-bask {
+  background: var(--theme-surface-raised);
+}
+
+:root[data-theme="dark"] .card-metric-teal,
+:root[data-theme="dark"] .card-metric-success {
+  border-left: 4px solid var(--rewst-teal);
+}
+
+:root[data-theme="dark"] .card-metric-fandango {
+  border-left: 4px solid var(--rewst-fandango);
+}
+
+:root[data-theme="dark"] .card-metric-orange,
+:root[data-theme="dark"] .card-metric-warning {
+  border-left: 4px solid var(--rewst-orange);
+}
+
+:root[data-theme="dark"] .card-metric-error,
+:root[data-theme="dark"] .card-metric-bask {
+  border-left: 4px solid var(--rewst-bask);
+}
+
+:root[data-theme="dark"] .card-metric-snooze {
+  border-left: 4px solid var(--rewst-snooze);
+}
+
 :root[data-theme="dark"] .card-success,
 :root[data-theme="dark"] .alert-success,
 :root[data-theme="dark"] .insight-empty-state {
@@ -1759,7 +1808,7 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
 }
 
 :root[data-theme="dark"] .loading-content {
-  background: rgba(24, 35, 45, 0.96);
+  background: rgba(36, 52, 62, 0.97);
   border-color: var(--theme-border);
 }
 
@@ -1781,7 +1830,7 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
 :root[data-theme="dark"] select,
 :root[data-theme="dark"] select.form-input,
 :root[data-theme="dark"] select#form-selector {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23d6e0e5' d='M6 9L1 4h10z'/%3E%3C/svg%3E") !important;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23e7eef2' d='M6 9L1 4h10z'/%3E%3C/svg%3E") !important;
   background-repeat: no-repeat !important;
   background-position: right 0.75rem center !important;
   background-size: 0.75rem !important;
