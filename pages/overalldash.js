@@ -329,6 +329,7 @@ function renderDashboard() {
 
         // Render Execution Trend Chart
         const renderExecutionChart = () => {
+            const chartPalette = getDashboardChartPalette();
             const canvas = document.createElement('canvas');
             const canvasWrapper = document.createElement('div');
             canvasWrapper.className = 'relative w-full';
@@ -385,8 +386,8 @@ function renderDashboard() {
                         {
                             label: 'Succeeded',
                             data: executionChartData.map(d => d.succeeded),
-                            borderColor: 'rgba(16,185,129,1)',
-                            backgroundColor: 'rgba(16,185,129,0.1)',
+                            borderColor: chartPalette.trendUp,
+                            backgroundColor: chartPalette.trendUpFill,
                             borderWidth: 2,
                             tension: 0.4,
                             fill: true
@@ -394,8 +395,8 @@ function renderDashboard() {
                         {
                             label: 'Failed',
                             data: executionChartData.map(d => d.failed),
-                            borderColor: 'rgba(239,68,68,1)',
-                            backgroundColor: 'rgba(239,68,68,0.1)',
+                            borderColor: chartPalette.trendDown,
+                            backgroundColor: chartPalette.trendDownFill,
                             borderWidth: 2,
                             tension: 0.4,
                             fill: true

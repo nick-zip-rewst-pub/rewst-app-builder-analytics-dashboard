@@ -223,6 +223,10 @@ test('readChartPalette returns trimmed semantic chart colors', () => {
     ['--theme-border', '#344652'],
     ['--theme-surface', '#18232d'],
     ['--theme-tooltip', 'rgba(8, 14, 20, 0.96)'],
+    ['--theme-trend-up', '#72d6a1'],
+    ['--theme-trend-up-fill', 'rgba(114, 214, 161, 0.12)'],
+    ['--theme-trend-down', '#ff918d'],
+    ['--theme-trend-down-fill', 'rgba(255, 145, 141, 0.12)'],
   ]);
   const palette = readChartPalette({}, () => ({
     getPropertyValue(name) {
@@ -237,6 +241,10 @@ test('readChartPalette returns trimmed semantic chart colors', () => {
     border: '#344652',
     surface: '#18232d',
     tooltipBackground: 'rgba(8, 14, 20, 0.96)',
+    trendUp: '#72d6a1',
+    trendUpFill: 'rgba(114, 214, 161, 0.12)',
+    trendDown: '#ff918d',
+    trendDownFill: 'rgba(255, 145, 141, 0.12)',
   });
 });
 

@@ -72,6 +72,10 @@
   --theme-grid: rgba(51, 51, 51, 0.10);
   --theme-tooltip: rgba(17, 24, 39, 0.94);
   --theme-overlay: rgba(255, 255, 255, 0.20);
+  --theme-trend-up: #10b981;
+  --theme-trend-up-fill: rgba(16, 185, 129, 0.10);
+  --theme-trend-down: #ef4444;
+  --theme-trend-down-fill: rgba(239, 68, 68, 0.10);
 
   /* Neutral Colors */
   --rewst-black: var(--theme-text-strong);
@@ -1651,6 +1655,10 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
   --theme-grid: rgba(231, 238, 242, 0.18);
   --theme-tooltip: rgba(16, 26, 33, 0.97);
   --theme-overlay: rgba(16, 26, 33, 0.44);
+  --theme-trend-up: #72d6a1;
+  --theme-trend-up-fill: rgba(114, 214, 161, 0.12);
+  --theme-trend-down: #ff918d;
+  --theme-trend-down-fill: rgba(255, 145, 141, 0.12);
   --theme-metric-teal: #247e80;
   --theme-metric-fandango: #8b426f;
   --theme-metric-orange: #946221;
@@ -1783,6 +1791,14 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
 
 :root[data-theme="dark"] .card-metric-bask {
   background: var(--theme-metric-bask);
+}
+
+:root[data-theme="dark"] .card-metric:not([class*="card-metric-"]) .text-green-600 {
+  color: var(--theme-trend-up) !important;
+}
+
+:root[data-theme="dark"] .card-metric:not([class*="card-metric-"]) .text-red-600 {
+  color: var(--theme-trend-down) !important;
 }
 
 :root[data-theme="dark"] .card-success,
@@ -12764,6 +12780,10 @@ if (typeof module !== 'undefined' && module.exports) {
       border: read('--theme-border'),
       surface: read('--theme-surface'),
       tooltipBackground: read('--theme-tooltip'),
+      trendUp: read('--theme-trend-up'),
+      trendUpFill: read('--theme-trend-up-fill'),
+      trendDown: read('--theme-trend-down'),
+      trendDownFill: read('--theme-trend-down-fill'),
     };
   }
 
@@ -15398,6 +15418,7 @@ function renderDashboard() {
 
         // Render Execution Trend Chart
         const renderExecutionChart = () => {
+            const chartPalette = getDashboardChartPalette();
             const canvas = document.createElement('canvas');
             const canvasWrapper = document.createElement('div');
             canvasWrapper.className = 'relative w-full';
@@ -15454,8 +15475,8 @@ function renderDashboard() {
                         {
                             label: 'Succeeded',
                             data: executionChartData.map(d => d.succeeded),
-                            borderColor: 'rgba(16,185,129,1)',
-                            backgroundColor: 'rgba(16,185,129,0.1)',
+                            borderColor: chartPalette.trendUp,
+                            backgroundColor: chartPalette.trendUpFill,
                             borderWidth: 2,
                             tension: 0.4,
                             fill: true
@@ -15463,8 +15484,8 @@ function renderDashboard() {
                         {
                             label: 'Failed',
                             data: executionChartData.map(d => d.failed),
-                            borderColor: 'rgba(239,68,68,1)',
-                            backgroundColor: 'rgba(239,68,68,0.1)',
+                            borderColor: chartPalette.trendDown,
+                            backgroundColor: chartPalette.trendDownFill,
                             borderWidth: 2,
                             tension: 0.4,
                             fill: true
@@ -16610,6 +16631,7 @@ function renderWorkflowTimeline(execs) {
   `;
 
   const renderChart = (type) => {
+    const chartPalette = getDashboardChartPalette();
     const canvas = document.createElement("canvas");
     const wrapper = document.createElement("div");
     wrapper.className = "relative w-full";
@@ -16622,8 +16644,8 @@ function renderWorkflowTimeline(execs) {
             {
               label: "Succeeded",
               data: succeededData,
-              borderColor: "rgba(16,185,129,1)",
-              backgroundColor: "rgba(16,185,129,0.1)",
+              borderColor: chartPalette.trendUp,
+              backgroundColor: chartPalette.trendUpFill,
               borderWidth: 2,
               tension: 0.4,
               fill: true,
@@ -16631,8 +16653,8 @@ function renderWorkflowTimeline(execs) {
             {
               label: "Failed",
               data: failedData,
-              borderColor: "rgba(239,68,68,1)",
-              backgroundColor: "rgba(239,68,68,0.1)",
+              borderColor: chartPalette.trendDown,
+              backgroundColor: chartPalette.trendDownFill,
               borderWidth: 2,
               tension: 0.4,
               fill: true,
@@ -16841,6 +16863,7 @@ function renderWorkflowExecutionsTable(execs, allExecutions = []) {
 
   RewstDOM.place(table, "#workflow-executions");
 }
+
 
       // Render the Form details dashboard code  (Form Details Page)
       //function renderFormwDetailsDashboard()

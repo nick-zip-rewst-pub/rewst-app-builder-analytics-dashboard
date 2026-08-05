@@ -77,3 +77,15 @@ test('dark theme keeps solid metric colors readable against white content', () =
     );
   }
 });
+
+test('dark theme semantic trends use the approved readable palette', () => {
+  const variables = darkThemeVariables();
+  const surface = variables['--theme-surface'];
+  const trendUp = variables['--theme-trend-up'];
+  const trendDown = variables['--theme-trend-down'];
+
+  assert.equal(trendUp?.toLowerCase(), '#72d6a1');
+  assert.equal(trendDown?.toLowerCase(), '#ff918d');
+  assert.ok(contrast(trendUp, surface) >= 4.5, 'positive trends should meet AA contrast');
+  assert.ok(contrast(trendDown, surface) >= 4.5, 'negative trends should meet AA contrast');
+});

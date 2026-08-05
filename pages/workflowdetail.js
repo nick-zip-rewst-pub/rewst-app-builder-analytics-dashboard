@@ -304,6 +304,7 @@ function renderWorkflowTimeline(execs) {
   `;
 
   const renderChart = (type) => {
+    const chartPalette = getDashboardChartPalette();
     const canvas = document.createElement("canvas");
     const wrapper = document.createElement("div");
     wrapper.className = "relative w-full";
@@ -316,8 +317,8 @@ function renderWorkflowTimeline(execs) {
             {
               label: "Succeeded",
               data: succeededData,
-              borderColor: "rgba(16,185,129,1)",
-              backgroundColor: "rgba(16,185,129,0.1)",
+              borderColor: chartPalette.trendUp,
+              backgroundColor: chartPalette.trendUpFill,
               borderWidth: 2,
               tension: 0.4,
               fill: true,
@@ -325,8 +326,8 @@ function renderWorkflowTimeline(execs) {
             {
               label: "Failed",
               data: failedData,
-              borderColor: "rgba(239,68,68,1)",
-              backgroundColor: "rgba(239,68,68,0.1)",
+              borderColor: chartPalette.trendDown,
+              backgroundColor: chartPalette.trendDownFill,
               borderWidth: 2,
               tension: 0.4,
               fill: true,

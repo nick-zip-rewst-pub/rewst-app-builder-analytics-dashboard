@@ -153,6 +153,10 @@
       border: read('--theme-border'),
       surface: read('--theme-surface'),
       tooltipBackground: read('--theme-tooltip'),
+      trendUp: read('--theme-trend-up'),
+      trendUpFill: read('--theme-trend-up-fill'),
+      trendDown: read('--theme-trend-down'),
+      trendDownFill: read('--theme-trend-down-fill'),
     };
   }
 
