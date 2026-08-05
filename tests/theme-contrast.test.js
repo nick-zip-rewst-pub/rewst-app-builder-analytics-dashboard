@@ -34,6 +34,21 @@ function contrast(first, second) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
+function darkMetricBackgroundToken(color) {
+  const target = `:root[data-theme="dark"] .card-metric-${color}`;
+  const uncommentedCss = css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+  for (const match of uncommentedCss.matchAll(/([^{}]+)\{([^{}]+)\}/g)) {
+    const selectors = match[1].split(',').map((selector) => selector.trim());
+    if (!selectors.includes(target)) continue;
+
+    const background = match[2].match(/background:\s*var\((--[\w-]+)\)\s*;/);
+    if (background) return background[1];
+  }
+
+  assert.fail(`${color} metric card should define a dark-mode background token`);
+}
+
 test('dark theme has readable, visibly separated neutral surfaces', () => {
   const variables = darkThemeVariables();
   const page = variables['--theme-page'];
@@ -47,12 +62,18 @@ test('dark theme has readable, visibly separated neutral surfaces', () => {
   assert.ok(contrast(mutedText, surface) >= 4.5, 'secondary text should remain readable');
 });
 
-test('dark theme turns solid metric gradients into neutral cards with accents', () => {
+test('dark theme keeps solid metric colors readable against white content', () => {
+  const variables = darkThemeVariables();
+
   for (const color of ['teal', 'fandango', 'orange', 'success', 'error', 'warning', 'snooze', 'bask']) {
-    const selector = new RegExp(
-      `:root\\[data-theme="dark"\\] \\.card-metric-${color}[^}]*background:\\s*var\\(--theme-surface-raised\\)`,
-      's'
+    const token = darkMetricBackgroundToken(color);
+    const background = variables[token];
+
+    assert.notEqual(token, '--theme-surface-raised', `${color} should retain a solid brand color`);
+    assert.match(background, /^#[a-f\d]{6}$/i, `${color} should resolve to a hex color`);
+    assert.ok(
+      contrast(background, '#ffffff') >= 4.5,
+      `${color} should keep white metric content readable`
     );
-    assert.match(css, selector, `${color} metric card should use the neutral raised surface`);
   }
 });

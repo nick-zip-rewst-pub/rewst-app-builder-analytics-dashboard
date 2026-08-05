@@ -1621,6 +1621,14 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
   --theme-grid: rgba(231, 238, 242, 0.18);
   --theme-tooltip: rgba(16, 26, 33, 0.97);
   --theme-overlay: rgba(16, 26, 33, 0.44);
+  --theme-metric-teal: #247e80;
+  --theme-metric-fandango: #8b426f;
+  --theme-metric-orange: #946221;
+  --theme-metric-success: #29756c;
+  --theme-metric-error: #874746;
+  --theme-metric-warning: #946221;
+  --theme-metric-snooze: #5f5686;
+  --theme-metric-bask: #874746;
 
   /* Brighter tints keep brand accents legible without becoming card backgrounds. */
   --rewst-teal: #53cbc7;
@@ -1713,40 +1721,38 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
   color: var(--theme-text);
 }
 
-/* Solid KPI gradients overpower the dark interface. Keep one neutral card
-   surface and use the brand colors as compact accents instead. */
-:root[data-theme="dark"] .card-metric-teal,
-:root[data-theme="dark"] .card-metric-fandango,
-:root[data-theme="dark"] .card-metric-orange,
-:root[data-theme="dark"] .card-metric-success,
-:root[data-theme="dark"] .card-metric-error,
-:root[data-theme="dark"] .card-metric-warning,
-:root[data-theme="dark"] .card-metric-snooze,
-:root[data-theme="dark"] .card-metric-bask {
-  background: var(--theme-surface-raised);
-}
-
-:root[data-theme="dark"] .card-metric-teal,
-:root[data-theme="dark"] .card-metric-success {
-  border-left: 4px solid var(--rewst-teal);
+/* Preserve solid KPI identity with quieter colors that sit naturally on the
+   dark canvas and retain AA contrast with the cards' white content. */
+:root[data-theme="dark"] .card-metric-teal {
+  background: var(--theme-metric-teal);
 }
 
 :root[data-theme="dark"] .card-metric-fandango {
-  border-left: 4px solid var(--rewst-fandango);
+  background: var(--theme-metric-fandango);
 }
 
-:root[data-theme="dark"] .card-metric-orange,
+:root[data-theme="dark"] .card-metric-orange {
+  background: var(--theme-metric-orange);
+}
+
+:root[data-theme="dark"] .card-metric-success {
+  background: var(--theme-metric-success);
+}
+
+:root[data-theme="dark"] .card-metric-error {
+  background: var(--theme-metric-error);
+}
+
 :root[data-theme="dark"] .card-metric-warning {
-  border-left: 4px solid var(--rewst-orange);
-}
-
-:root[data-theme="dark"] .card-metric-error,
-:root[data-theme="dark"] .card-metric-bask {
-  border-left: 4px solid var(--rewst-bask);
+  background: var(--theme-metric-warning);
 }
 
 :root[data-theme="dark"] .card-metric-snooze {
-  border-left: 4px solid var(--rewst-snooze);
+  background: var(--theme-metric-snooze);
+}
+
+:root[data-theme="dark"] .card-metric-bask {
+  background: var(--theme-metric-bask);
 }
 
 :root[data-theme="dark"] .card-success,

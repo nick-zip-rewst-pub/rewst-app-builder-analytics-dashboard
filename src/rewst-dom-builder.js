@@ -548,7 +548,7 @@ const RewstDOM = {
         const searchInput = document.createElement('input');
         searchInput.type = 'text';
         searchInput.placeholder = 'Search...';
-        searchInput.className = 'w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500';
+        searchInput.className = 'form-input w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500';
         
         searchInput.addEventListener('input', (e) => {
           applyFiltersAndSearch(e.target.value);
@@ -3436,7 +3436,7 @@ const RewstDOM = {
     const input = document.createElement('input');
     input.type = 'text';
     input.placeholder = placeholder;
-    input.className = 'w-full px-3 py-2 pr-10 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-rewst-teal focus:border-rewst-teal';
+    input.className = 'form-input w-full px-3 py-2 pr-10 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-rewst-teal focus:border-rewst-teal';
 
     // Create dropdown arrow button
     const dropdownBtn = document.createElement('button');

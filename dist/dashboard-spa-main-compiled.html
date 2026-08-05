@@ -1651,6 +1651,14 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
   --theme-grid: rgba(231, 238, 242, 0.18);
   --theme-tooltip: rgba(16, 26, 33, 0.97);
   --theme-overlay: rgba(16, 26, 33, 0.44);
+  --theme-metric-teal: #247e80;
+  --theme-metric-fandango: #8b426f;
+  --theme-metric-orange: #946221;
+  --theme-metric-success: #29756c;
+  --theme-metric-error: #874746;
+  --theme-metric-warning: #946221;
+  --theme-metric-snooze: #5f5686;
+  --theme-metric-bask: #874746;
 
   /* Brighter tints keep brand accents legible without becoming card backgrounds. */
   --rewst-teal: #53cbc7;
@@ -1743,40 +1751,38 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
   color: var(--theme-text);
 }
 
-/* Solid KPI gradients overpower the dark interface. Keep one neutral card
-   surface and use the brand colors as compact accents instead. */
-:root[data-theme="dark"] .card-metric-teal,
-:root[data-theme="dark"] .card-metric-fandango,
-:root[data-theme="dark"] .card-metric-orange,
-:root[data-theme="dark"] .card-metric-success,
-:root[data-theme="dark"] .card-metric-error,
-:root[data-theme="dark"] .card-metric-warning,
-:root[data-theme="dark"] .card-metric-snooze,
-:root[data-theme="dark"] .card-metric-bask {
-  background: var(--theme-surface-raised);
-}
-
-:root[data-theme="dark"] .card-metric-teal,
-:root[data-theme="dark"] .card-metric-success {
-  border-left: 4px solid var(--rewst-teal);
+/* Preserve solid KPI identity with quieter colors that sit naturally on the
+   dark canvas and retain AA contrast with the cards' white content. */
+:root[data-theme="dark"] .card-metric-teal {
+  background: var(--theme-metric-teal);
 }
 
 :root[data-theme="dark"] .card-metric-fandango {
-  border-left: 4px solid var(--rewst-fandango);
+  background: var(--theme-metric-fandango);
 }
 
-:root[data-theme="dark"] .card-metric-orange,
+:root[data-theme="dark"] .card-metric-orange {
+  background: var(--theme-metric-orange);
+}
+
+:root[data-theme="dark"] .card-metric-success {
+  background: var(--theme-metric-success);
+}
+
+:root[data-theme="dark"] .card-metric-error {
+  background: var(--theme-metric-error);
+}
+
 :root[data-theme="dark"] .card-metric-warning {
-  border-left: 4px solid var(--rewst-orange);
-}
-
-:root[data-theme="dark"] .card-metric-error,
-:root[data-theme="dark"] .card-metric-bask {
-  border-left: 4px solid var(--rewst-bask);
+  background: var(--theme-metric-warning);
 }
 
 :root[data-theme="dark"] .card-metric-snooze {
-  border-left: 4px solid var(--rewst-snooze);
+  background: var(--theme-metric-snooze);
+}
+
+:root[data-theme="dark"] .card-metric-bask {
+  background: var(--theme-metric-bask);
 }
 
 :root[data-theme="dark"] .card-success,
@@ -2071,7 +2077,7 @@ tbody tr:nth-child(10) { animation-delay: 270ms; }
 
     <!-- Load Sub-Workflows Button (Bottom of Sidebar) -->
     <div id="load-sub-workflows-container" class="p-4 border-t border-gray-200 hidden">
-      <button id="load-sub-workflows-btn" class="flex items-center justify-center gap-2 w-full px-4 py-2 bg-rewst-teal hover:bg-rewst-teal-dark text-white rounded-md transition-colors duration-200 text-sm font-medium whitespace-nowrap">
+      <button id="load-sub-workflows-btn" class="btn-primary flex items-center justify-center gap-2 w-full text-sm whitespace-nowrap">
         <span class="material-icons text-lg">add_circle_outline</span>
         <span class="nav-text">Load Sub-Workflows</span>
       </button>
@@ -8896,7 +8902,7 @@ const RewstDOM = {
         const searchInput = document.createElement('input');
         searchInput.type = 'text';
         searchInput.placeholder = 'Search...';
-        searchInput.className = 'w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500';
+        searchInput.className = 'form-input w-full pl-10 pr-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500';
         
         searchInput.addEventListener('input', (e) => {
           applyFiltersAndSearch(e.target.value);
@@ -11784,7 +11790,7 @@ const RewstDOM = {
     const input = document.createElement('input');
     input.type = 'text';
     input.placeholder = placeholder;
-    input.className = 'w-full px-3 py-2 pr-10 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-rewst-teal focus:border-rewst-teal';
+    input.className = 'form-input w-full px-3 py-2 pr-10 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-rewst-teal focus:border-rewst-teal';
 
     // Create dropdown arrow button
     const dropdownBtn = document.createElement('button');
@@ -12600,6 +12606,7 @@ if (typeof window !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = RewstDOM;
 }
+
 
     // Import dashboard theme manager
     (function attachRewstTheme(root, factory) {
